@@ -1,0 +1,29 @@
+models:
+  qwen3:4b-local:
+    provider: ollama
+    endpoint: http://localhost:11434/api/chat
+    model_name: qwen3:4b
+    default_options:
+      temperature: 0.2
+      num_predict: 512
+    cost_per_1m_input: 0.0
+    cost_per_1m_output: 0.0
+
+  kimi-k2.6:
+    provider: openrouter
+    endpoint: https://openrouter.ai/api/v1/chat/completions
+    model_name: moonshotai/kimi-k2.6
+    cost_per_1m_input: 2.00
+    cost_per_1m_output: 8.00
+
+  # Cheap frontier fallback
+  gpt-4.1-nano:
+    provider: openrouter
+    endpoint: https://openrouter.ai/api/v1/chat/completions
+    model_name: openai/gpt-4.1-nano
+    cost_per_1m_input: 0.10
+    cost_per_1m_output: 0.40
+
+routing:
+  default: qwen3:4b-local
+  force_param: route

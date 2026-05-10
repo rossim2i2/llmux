@@ -1,0 +1,6 @@
+__pycache__/
+.venv/
+gateway.log
+router.db
+benchmark_results.json
+benchmark_quick_results.json
