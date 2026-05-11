@@ -129,6 +129,18 @@ def choose_model(body: dict, force: str | None) -> tuple[str, str]:
 
 # ── providers ───────────────────────────────────────────────────────
 
+_DEFAULT_SYSTEM_PROMPT = "You are a terse assistant. Answer directly. Never explain your reasoning."
+
+
+def _inject_system_prompt(messages: list, provider: str, model_name: str) -> list:
+    """Prepend default system prompt if none exists."""
+    if not messages:
+        return [{"role": "system", "content": _DEFAULT_SYSTEM_PROMPT}]
+    has_system = any(m.get("role") == "system" for m in messages)
+    if not has_system and model_name.startswith("qwen3"):
+        return [{"role": "system", "content": _DEFAULT_SYSTEM_PROMPT}, *messages]
+    return list(messages)
+
 
 def _hash_prompt(text: str) -> str:
     import hashlib
@@ -142,7 +154,9 @@ async def _stream_ollama(
     body: dict,
 ):
     """Stream Ollama /api/chat format, yield SSE chunks."""
-    messages = body.get("messages", [])
+    messages = _inject_system_prompt(
+        body.get("messages", []), cfg["provider"], cfg["model_name"]
+    )
     payload = {
         "model": cfg["model_name"],
         "messages": messages,
@@ -241,7 +255,9 @@ async def _nonstream_ollama(
     cfg: dict,
     body: dict,
 ):
-    messages = body.get("messages", [])
+    messages = _inject_system_prompt(
+        body.get("messages", []), cfg["provider"], cfg["model_name"]
+    )
     payload = {
         "model": cfg["model_name"],
         "messages": messages,
