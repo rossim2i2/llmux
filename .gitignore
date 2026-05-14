@@ -8,4 +8,6 @@ benchmark_quick_results.json
 # Benchmark output: ignore generated runs, but keep the directory and any committed samples
 benchmark/results/*.json
 !benchmark/results/sample.json
+benchmark/__pycache__/
 .env
+.letta/
