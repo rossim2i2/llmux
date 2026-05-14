@@ -1,133 +1,345 @@
 # Model Router
 
-A local FastAPI gateway that routes prompts between your GPU and frontier APIs. OpenAI-compatible `/chat/completions` endpoint with cost tracking.
+A local FastAPI gateway that routes prompts between your GPU and frontier APIs. OpenAI-compatible `/v1/chat/completions` and `/v1/responses` endpoints with heuristic routing, cost tracking, and integration support for Claude Code, Codex CLI, and Letta Code.
 
-**Status:** On hold pending Michael's decision on direction (see [Fork in the Road](#fork-in-the-road)).
+**Status:** Reference implementation — benchmarks complete, Claude Code and Codex CLI integrations working. Article in progress.
 
----
+----
 
 ## What Works Today
 
 | Component | State |
 |-----------|-------|
-| Gateway API | ✅ `localhost:8001` — OpenAI-compatible `/chat/completions` |
-| GPU inference | ✅ `qwen3:4b` on RX 7900 XTX at ~140 tok/s |
-| Verbosity fix | ✅ Auto-injects terse system prompt (6,126 → 229 tokens for code gen) |
-| Cost tracking | ✅ SQLite `router.db` + `/stats/weekly` dashboard |
-| Systemd service | ✅ Auto-starts on boot, after Ollama |
-| Streaming | ✅ SSE format for real-time responses |
-| Frontier routing | 🔧 Wired for OpenRouter but untested (no API key) |
-| Letta integration | ❌ Blocked — Letta uses proprietary API, not OpenAI-compatible |
+| Gateway API | ✅ `localhost:8001` — `/v1/chat/completions` + `/v1/responses` |
+| Local inference | ✅ 4 Ollama models on RX 7900 XTX |
+| Frontier providers | ✅ OpenAI, Anthropic, Google Gemini, OpenRouter (16 models total) |
+| Streaming | ✅ SSE for Chat Completions + Responses API |
+| Heuristic routing | ✅ Short/simple → local, architecture/complex → frontier |
+| Proxy model bypass | ✅ Ignores proxy-sent model names, applies gateway heuristic |
+| API key fallback | ✅ Gateway uses its own keys when client sends placeholder |
+| Model aliases | ✅ Config-driven alias resolution (e.g. `gpt-5-mini` → `gpt-5.4-mini`) |
+| Cost tracking | ✅ SQLite `router.db` |
+| Systemd service | ✅ User service, auto-restarts |
+| Claude Code integration | ✅ Via claude-code-proxy + gateway |
+| Codex CLI integration | ✅ Via `model_providers` config + `/v1/responses` |
+| Letta Code integration | ✅ Via local backend + `LMSTUDIO_BASE_URL` |
+| Classifier v3 | ✅ Multi-signal scoring, three-tier routing, 100% no-worse accuracy on 25-prompt benchmark |
 
-### Quick Test
-
-```bash
-curl http://localhost:8001/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"qwen3:4b-local","messages":[{"role":"user","content":"What is 2+2?"}]}'
-```
-
----
+----
 
 ## Architecture
 
 ```
-Your OpenAI-compatible client
-           |
-           v
-    localhost:8001
-    (FastAPI gateway)
-           |
-    Router decides:
-           |
-    ┌──────┴──────┐
-    |             |
-    v             v
-  Ollama      OpenRouter
-  (GPU)       (frontier APIs)
-qwen3:4b    kimi-k2.6, etc.
+Claude Code ──→ claude-code-proxy:8082 ──┐
+                                        │
+Codex CLI ──→ ~/.codex/config.toml ─────┤
+                                        ├──→ Gateway :8001
+Letta Code ──→ local backend (LMSTUDIO_BASE_URL) ┘        │
+                                           Router decides:
+                                                  │
+                                          ┌───────┴───────┐
+                                          │               │
+                                          v               v
+                                        Ollama       Frontier APIs
+                                        (GPU)    (OpenAI/Anthropic/Google)
+                                     4 models       12 models
 ```
 
----
+----
 
-## The Fork in the Road
+## Integration Guides
 
-The original goal was to intercept Letta Code traffic and route 90% to the local GPU. We discovered Letta Code speaks a **proprietary protocol** to `https://api.letta.com` — not OpenAI's API. The gateway cannot sit between Letta Code and Letta's cloud without reverse-engineering Letta's entire protocol.
+### Claude Code
 
-| Option | Description | Effort | Risk |
-|--------|-------------|--------|------|
-| **A. Repurpose gateway** | Use for other OpenAI-compatible tools (scripts, editors, CLI). Keep local-only, no APIs. | Low | None |
-| **B. Letta-protocol proxy** | Reverse-engineer Letta's API and build a translation layer | Very high | Fragile — breaks on Letta updates |
-| **C. Replace Letta Code** | Switch to generic client (aider, claude code, custom TUI). Lose persistent memory, scheduler, ecosystem. | Medium | Lose Letta features |
-| **D. Park project** | Accept the gateway is only useful for non-Letta work | None | Code exists but unused for main goal |
+Claude Code speaks the Anthropic Messages API. The gateway speaks OpenAI Chat Completions. A translation proxy bridges the gap.
 
-**Michael's preference:** No API costs (already pays for ChatGPT, Claude, Letta subscriptions). Wants to think before deciding.
+**Setup:**
 
----
+1. Install [claude-code-proxy](https://github.com/nielspeter/claude-code-proxy) (Go binary)
+2. Configure proxy to point at gateway:
 
-## Completed Work
+```bash
+# ~/.claude/proxy.env
+OPENAI_BASE_URL=http://localhost:8001/v1
+OPENAI_API_KEY=sk-placeholder
+```
 
-### 1. GPU Setup
-- Replaced CPU-only Arch `ollama` with official binary (bundles ROCm)
-- RX 7900 XTX detected: gfx1100, 24 GB VRAM
-- qwen3:4b inference: **15 tok/s (CPU) → 140 tok/s (GPU)**
+3. Start proxy: `claude-code-proxy`
+4. Launch Claude Code: `ANTHROPIC_BASE_URL=http://localhost:8082 claude`
 
-### 2. Verbosity Fix
-qwen3:4b emits extensive internal `thinking` content. The gateway now auto-injects a terse system prompt for any qwen3 request without one:
+**How routing works:**
 
-> "You are a terse assistant. Answer directly. Never explain your reasoning."
+The proxy sends a fixed model name (e.g. `gpt-5`) for every request. The gateway's `proxy_models` config lists these names — when it sees one, it ignores it and applies the heuristic instead. This means:
+- Simple prompts → local Ollama
+- Complex prompts → frontier (gpt-5.4-mini)
+- The user never has to switch models manually
 
-| Prompt | Before | After |
-|--------|--------|-------|
-| Code generation (JSON keys function) | 6,126 tokens | **229 tokens** |
-| Simple math (2+2) | 318 tokens | **117 tokens** |
+**Gotchas:**
+- The proxy's model name mapping overrides the gateway's body-model resolution. Without `proxy_models`, every request routes to the same model.
+- Claude Code wraps user prompts in large system messages (40-50K chars). The heuristic must look at the *last user message* length, not total prompt length.
+- The proxy uses `sk-placeholder` as the API key. The gateway falls back to its own environment-configured keys via `_resolve_api_key()`.
 
-### 3. Gateway Features
-- **Config-driven routing** (`config.yaml`): add models without code changes
-- **Pluggable providers**: Ollama (working), OpenRouter (wired, needs key)
-- **Stub heuristic**: <500 chars + no architecture keywords → local
-- **SQLite logging**: timestamp, model, latency, tokens, cost estimate
-- **Systemd service**: `model-router` — starts after Ollama, restarts on failure
+### Codex CLI
 
----
+Codex uses the OpenAI Responses API (`/v1/responses`), not Chat Completions. The gateway implements a Responses API endpoint that converts to/from Chat Completions internally.
 
-## Pending (when project resumes)
+**Setup:**
 
-1. **Michael's direction decision** — A, B, C, or D above
-2. **Classifier v2** — Replace stub heuristic with real routing logic
-3. **OpenRouter test** — Only if Michael wants frontier fallback (needs API key)
-4. **Feedback loop** — Detect retry patterns, flag bad routes
-5. **Client integration** — Point an actual tool at `http://localhost:8001`
+1. Switch from ChatGPT auth to API key auth:
 
----
+```bash
+export $(grep -v '^#' ~/Repos/github.com/rossim2i2/model-router/.env | xargs)
+echo "$OPENAI_API_KEY" | codex login --with-api-key
+```
+
+ChatGPT auth forces all requests through OpenAI's API and ignores custom base URLs. API key auth is required for custom routing.
+
+2. Configure `~/.codex/config.toml`:
+
+```toml
+[model_providers.model-router]
+name = "Model Router"
+type = "openai"
+base_url = "http://localhost:8001/v1"
+api_key = "sk-placeholder"
+wire_api = "responses"
+
+[profiles.routed]
+model_provider = "model-router"
+model = "gpt-5"
+```
+
+3. Launch: `codex -p routed`
+
+**How routing works:**
+
+Same as Claude Code — the profile sends `gpt-5` as the model name, which is in `proxy_models`, so the gateway applies the heuristic.
+
+**Gotchas:**
+- `wire_api = "chat"` is no longer supported in Codex v0.130+. Must use `wire_api = "responses"`.
+- The `type = "openai"` field is required in the model provider config.
+- A `profiles` section is needed to select the provider — Codex doesn't use `model_providers` without a profile.
+- The Responses API requires streaming (SSE). The gateway implements the full event sequence: `response.created` → `response.in_progress` → `response.output_item.added` → `response.content_part.added` → `response.output_text.delta` (repeated) → `response.output_text.done` → `response.content_part.done` → `response.output_item.done` → `response.completed` → `done`.
+- The Responses API input format uses `type: "message"` items with `input_text` content blocks (not `output_text`).
+
+### Letta Code
+
+Letta Code v0.25.8+ supports local provider connections via `--backend local`, which routes LLM inference directly from the CLI — no Docker or self-hosted server required.
+
+**Setup:**
+
+1. Set the LM Studio base URL to point at the gateway (add to `.bashrc`):
+
+```bash
+export LMSTUDIO_BASE_URL=http://localhost:8001/v1
+```
+
+2. Connect the local provider:
+
+```bash
+letta --backend local connect lmstudio
+```
+
+3. Run with a local model:
+
+```bash
+letta --backend local -p "What is 2+2?" --model lmstudio/qwen3:4b-local
+```
+
+**How routing works:**
+
+The local backend sends model names prefixed with `lmstudio/` (e.g., `lmstudio/qwen3:4b-local`). The gateway strips the prefix and applies the classifier. The local backend bundles tool definitions into the user message as content-block arrays (~1.3K chars), but the gateway's `_extract_user_intent()` parses the content blocks and extracts only the last `type: "text"` block — the user's actual message. This means:
+- "What is 2+2?" (12 chars extracted) → local
+- "Design a distributed system..." (150 chars, architecture signal) → frontier
+
+**Gotchas:**
+- `--backend local` is required — without it, `connect` fails with "Settings not initialized"
+- The LMStudio provider sends `"not-needed"` as its API key — the gateway treats this as a placeholder and falls back to its own keys
+- Local backend agents are separate from cloud agents — your cloud agent (api.letta.com) is untouched
+- `LMSTUDIO_BASE_URL` is not stored in the provider config — must be set in the environment
+- OpenAI-compatible proxy endpoints are "not officially supported" per Letta docs
+
+**Self-hosted server path (alternative):**
+
+The self-hosted Letta server (Docker) also supports `OPENAI_API_BASE` to redirect inference, but has a known `openai-proxy/*` handle prefix bug (issue #476). The local backend path avoids this entirely.
+
+----
+
+## Routing Logic
+
+The gateway routes requests using a **multi-signal prompt classifier** that scores the user's actual intent (not framework scaffolding) and maps to a three-tier routing table.
+
+### How it works
+
+1. **Extract user intent** — Parse the last user message. For content-block arrays (agent frameworks like Letta), extract only the last `type: "text"` block (the user's actual message, not system reminders or tool definitions).
+2. **Score with 11 signals** — Each signal contributes integer points to a complexity score.
+3. **Map score to tier** — Score ≤ 0 → local, 1–3 → mid, ≥ 4 → frontier.
+
+### Signals
+
+| Signal | Score | Detects |
+|--------|-------|---------|
+| `code_block` | +2 | Multi-line code (`def`, `class`, `async def`, ` ``` `) |
+| `code_reference` | +1 | Backtick function calls, "Write a Python/K8s/..." |
+| `error_traceback` | +1 | `Traceback`, `XError`, `at line N` |
+| `architecture` | +2 | distributed, k8s, consistency, latency, throughput, transaction... |
+| `reasoning_verb` | +2 | compare, evaluate, why does, should I use, tradeoffs... |
+| `security_correctness` | +2 | bug, race, threading, off-by-one, O(n²), vulnerability... |
+| `multi_step` | +3 | "then write", "in order", "list tool calls", "be exact about" |
+| `multi_constraint` | +2 | "3 replicas", "exposing port", numeric specs |
+| `precision_required` | +1 | "exact command", "exact arguments" |
+| `search_query` | +1 | "find every/all X that Y" |
+| `simplicity_hint` | -2 | "one-liner", "single command", "briefly", "in one sentence" |
+| `simple_lookup` | -1 | Short "what's the X" / "how do I" questions |
+| `long` / `very_long` | +1/+2 | 800+ / 1500+ chars (positive only — short ≠ simple) |
+
+### Three-tier routing
+
+| Tier | Score | Model | Cost/1K input | When |
+|------|-------|-------|---------------|------|
+| **Local** | ≤ 0 | `qwen3:4b-local` (Ollama) | $0.00 | Simple lookups, trivial code, factual questions |
+| **Mid** | 1–3 | `gpt-5.4-nano` (OpenAI) | $0.11 | Code writing, debugging, config generation |
+| **Frontier** | ≥ 4 | `gpt-5.4-mini` (OpenAI) | $0.69 | Architecture, security review, multi-step reasoning |
+
+### Validation results
+
+The classifier is validated against the 25-prompt benchmark suite with known difficulty labels:
+
+| Metric | Result |
+|--------|--------|
+| Exact tier match | 19/25 (76%) |
+| No worse than ideal | 25/25 (100%) |
+| Hard prompts → frontier | 8/8 (100%) |
+| Medium prompts → mid+ | 8/8 (100%) |
+| Easy/trivial → local | 4/9 (44% — rest over-routed to mid, acceptable) |
+
+"No worse than ideal" means the prompt is sent to a tier at least as capable as the ideal — over-routing (easy → mid) costs more but doesn't sacrifice quality.
+
+Run the validator: `python3 benchmark/validate_classifier.py`
+
+### Proxy model bypass
+
+Model names in `proxy_models` (e.g. `gpt-5`, `gpt-5-mini`) are ignored by the body-model resolver. This prevents proxy layers from overriding the gateway's routing decisions.
+
+### API key fallback
+
+When the client sends a placeholder key (`sk-placeholder`, `sk-xxx`), the gateway falls back to its own environment-configured keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.).
+
+----
+
+## Quick Start
+
+```bash
+# Start gateway (systemd handles this normally)
+systemctl --user start model-router
+
+# Test health
+curl http://localhost:8001/health
+
+# Test Chat Completions
+curl http://localhost:8001/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3:4b-local","messages":[{"role":"user","content":"What is 2+2?"}]}'
+
+# Test Responses API
+curl http://localhost:8001/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.4-mini","input":"What is 2+2?"}'
+
+# Force a specific route
+curl "http://localhost:8001/v1/chat/completions?route=gpt-5.5" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3:4b-local","messages":[{"role":"user","content":"What is 2+2?"}]}'
+```
+
+----
+
+## Config
+
+Models and routing are defined in `config.yaml`:
+
+```yaml
+models:
+  qwen3:4b-local:
+    provider: ollama
+    endpoint: http://localhost:11434/api/chat
+    model_name: qwen3:4b
+    think: false
+    default_options:
+      temperature: 0.7
+
+  gpt-5.4-mini:
+    provider: openai
+    endpoint: https://api.openai.com/v1/chat/completions
+    model_name: gpt-5.4-mini
+    use_max_completion_tokens: true
+    default_options:
+      max_completion_tokens: 1024
+    cost_per_1m_input: 0.75
+    cost_per_1m_output: 4.50
+    aliases: [gpt-5-mini]
+
+routing:
+  default: qwen3:4b-local
+  mid: gpt-5.4-nano
+  frontier: gpt-5.4-mini
+  force_param: route
+  proxy_models: [gpt-5, gpt-5-mini]
+```
+
+**Key config options:**
+- `aliases` — map client model names to configured backends
+- `proxy_models` — model names to ignore for routing (let heuristic decide)
+- `use_max_completion_tokens` — for OpenAI models that reject `max_tokens`
+- `think: false` — for Ollama thinking models (merge thinking into content)
+- `no_temperature` — for models that reject temperature parameter
+
+----
+
+## API Keys
+
+The gateway needs API keys for frontier providers. Store them in `.env` (gitignored):
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-proj-...
+GOOGLE_API_KEY=AIza...
+OPENROUTER_API_KEY=sk-or-...
+```
+
+The systemd service loads these via `EnvironmentFile`.
+
+----
 
 ## Repo Structure
 
 | File | Purpose |
 |------|---------|
-| `main.py` | FastAPI app — routing, providers, logging |
-| `config.yaml` | Model definitions + routing rules |
+| `main.py` | FastAPI app — routing, providers, Responses API, logging |
+| `config.yaml` | Model definitions, aliases, routing rules |
+| `.env` | API keys (gitignored) |
 | `requirements.txt` | Python dependencies |
-| `STATUS.md` | Detailed session history and analysis |
-| `benchmark.py` / `benchmark_quick.py` | Performance testing scripts |
+| `benchmark/` | Benchmark runner, judge, prompts, results, classifier validator |
 | `router.db` | SQLite request log (auto-created) |
-| `gateway.log` | Uvicorn logs |
 
----
+----
 
 ## Commands
 
 ```bash
-# Start manually (systemd handles this on boot)
+# Systemd (preferred)
+systemctl --user start model-router
+systemctl --user status model-router
+journalctl --user -u model-router -f
+
+# Manual start
 cd ~/Repos/github.com/rossim2i2/model-router
+export $(grep -v '^#' .env | xargs)
 .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8001
 
-# Check service
-sudo systemctl status model-router
-
-# View weekly stats
-curl http://localhost:8001/stats/weekly
-
-# Test health
+# Check health
 curl http://localhost:8001/health
+
+# List available models
+curl http://localhost:8001/v1/models
 ```
