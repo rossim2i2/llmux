@@ -3,20 +3,78 @@ models:
     provider: ollama
     endpoint: http://localhost:11434/api/chat
     model_name: qwen3:4b
+    # qwen3 is a thinking model. think:false tells Ollama to skip the separate
+    # `thinking` field and merge everything into content, so streaming and
+    # token counts behave like any other model.
+    think: false
     default_options:
       temperature: 0.2
-      num_predict: 512
+      # 2048 covers qwen3's ~500-token thinking preamble plus a reasonable answer.
+      # Smaller caps truncate the response before the model finishes thinking.
+      num_predict: 2048
     cost_per_1m_input: 0.0
     cost_per_1m_output: 0.0
 
+  qwen2.5-coder-7b-local:
+    provider: ollama
+    endpoint: http://localhost:11434/api/chat
+    model_name: qwen2.5-coder:7b
+    default_options:
+      temperature: 0.2
+      num_predict: 1024
+    cost_per_1m_input: 0.0
+    cost_per_1m_output: 0.0
+
+  gemma3:4b-local:
+    provider: ollama
+    endpoint: http://localhost:11434/api/chat
+    model_name: gemma3:4b
+    default_options:
+      temperature: 0.2
+      num_predict: 1024
+    cost_per_1m_input: 0.0
+    cost_per_1m_output: 0.0
+
+  deepseek-coder-v2-16b-local:
+    provider: ollama
+    endpoint: http://localhost:11434/api/chat
+    model_name: deepseek-coder-v2:16b
+    default_options:
+      temperature: 0.2
+      num_predict: 1024
+    cost_per_1m_input: 0.0
+    cost_per_1m_output: 0.0
+
+  # Open models via OpenRouter
   kimi-k2.6:
     provider: openrouter
     endpoint: https://openrouter.ai/api/v1/chat/completions
     model_name: moonshotai/kimi-k2.6
-    cost_per_1m_input: 2.00
-    cost_per_1m_output: 8.00
+    cost_per_1m_input: 0.75
+    cost_per_1m_output: 3.50
 
-  # Cheap frontier fallback
+  deepseek-v4-pro:
+    provider: openrouter
+    endpoint: https://openrouter.ai/api/v1/chat/completions
+    model_name: deepseek/deepseek-v4-pro
+    cost_per_1m_input: 0.435
+    cost_per_1m_output: 0.87
+
+  gemma-4-26b:
+    provider: openrouter
+    endpoint: https://openrouter.ai/api/v1/chat/completions
+    model_name: google/gemma-4-26b-a4b-it
+    cost_per_1m_input: 0.06
+    cost_per_1m_output: 0.33
+
+  qwen3.5-9b:
+    provider: openrouter
+    endpoint: https://openrouter.ai/api/v1/chat/completions
+    model_name: qwen/qwen3.5-9b
+    cost_per_1m_input: 0.05
+    cost_per_1m_output: 0.20
+
+  # Cheap frontier fallback (via OpenRouter)
   gpt-4.1-nano:
     provider: openrouter
     endpoint: https://openrouter.ai/api/v1/chat/completions
@@ -24,6 +82,101 @@ models:
     cost_per_1m_input: 0.10
     cost_per_1m_output: 0.40
 
+  # Direct OpenAI — frontier comparison
+  gpt-5.4-nano:
+    provider: openai
+    endpoint: https://api.openai.com/v1/chat/completions
+    model_name: gpt-5.4-nano
+    use_max_completion_tokens: true
+    default_options:
+      max_completion_tokens: 1024
+    cost_per_1m_input: 0.15
+    cost_per_1m_output: 0.75
+
+  gpt-5.4-mini:
+    provider: openai
+    endpoint: https://api.openai.com/v1/chat/completions
+    model_name: gpt-5.4-mini
+    use_max_completion_tokens: true
+    default_options:
+      max_completion_tokens: 1024
+    cost_per_1m_input: 0.75
+    cost_per_1m_output: 4.50
+    aliases: [gpt-5-mini]
+
+  gpt-5.5:
+    provider: openai
+    endpoint: https://api.openai.com/v1/chat/completions
+    model_name: gpt-5.5
+    # GPT-5.5 requires max_completion_tokens instead of max_tokens
+    use_max_completion_tokens: true
+    default_options:
+      max_completion_tokens: 4096
+    cost_per_1m_input: 5.00
+    cost_per_1m_output: 30.00
+    aliases: [gpt-5]
+
+  # Direct Anthropic — used for judge.py and frontier comparison
+  claude-haiku-4-5:
+    provider: anthropic
+    endpoint: https://api.anthropic.com/v1/messages
+    model_name: claude-haiku-4-5-20251001
+    default_options:
+      temperature: 0.0
+      max_tokens: 1024
+    cost_per_1m_input: 1.00
+    cost_per_1m_output: 5.00
+    aliases: [claude-3-5-haiku, claude-haiku-3-5]
+
+  claude-sonnet-4-6:
+    provider: anthropic
+    endpoint: https://api.anthropic.com/v1/messages
+    model_name: claude-sonnet-4-6
+    default_options:
+      temperature: 0.0
+      max_tokens: 1024
+    cost_per_1m_input: 3.00
+    cost_per_1m_output: 15.00
+    aliases: [claude-sonnet, claude-4-sonnet]
+
+  claude-opus-4-7:
+    provider: anthropic
+    endpoint: https://api.anthropic.com/v1/messages
+    model_name: claude-opus-4-7
+    # Opus 4.7 uses adaptive thinking — temperature is deprecated and rejected.
+    no_temperature: true
+    default_options:
+      max_tokens: 1024
+    cost_per_1m_input: 5.00
+    cost_per_1m_output: 25.00
+    aliases: [claude-opus]
+
+  # Google Gemini — direct API
+  gemini-2.5-flash:
+    provider: google
+    endpoint: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent
+    model_name: gemini-2.5-flash
+    default_options:
+      temperature: 0.0
+      max_tokens: 2048
+    cost_per_1m_input: 0.30
+    cost_per_1m_output: 2.50
+
+  gemini-2.5-pro:
+    provider: google
+    endpoint: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent
+    model_name: gemini-2.5-pro
+    default_options:
+      temperature: 0.0
+      max_tokens: 2048
+    cost_per_1m_input: 2.50
+    cost_per_1m_output: 15.00
+
 routing:
   default: qwen3:4b-local
+  mid: gpt-5.4-nano
+  frontier: gpt-5.4-mini
   force_param: route
+  # Model names sent by proxies that should be ignored — let the gateway's
+  # heuristic decide instead of blindly obeying the proxy's model mapping.
+  proxy_models: [gpt-5, gpt-5-mini]

@@ -4,3 +4,8 @@ gateway.log
 router.db
 benchmark_results.json
 benchmark_quick_results.json
+
+# Benchmark output: ignore generated runs, but keep the directory and any committed samples
+benchmark/results/*.json
+!benchmark/results/sample.json
+.env
