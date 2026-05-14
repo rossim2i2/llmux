@@ -1,0 +1,252 @@
+# Benchmark prompt library.
+#
+# Each prompt is graded for difficulty so you can see where small local models
+# start to fall behind larger ones. The point of the suite isn't to prove that
+# any model can do every task — it's to show *where* the failure thresholds are
+# for each tier, so you know what to route locally and what to send upstream.
+#
+# Categories:
+#   code-generation  — write new code
+#   code-editing     — modify existing code
+#   debugging        — interpret errors, find bugs
+#   explanation      — describe concepts, decisions, history
+#   config           — produce structured configuration
+#   tool-use         — describe what tool calls a coding agent would make
+#   hard-reasoning   — multi-step or context-heavy tasks intended to fail small models
+#
+# Difficulty: trivial | easy | medium | hard
+#
+# If you want to add prompts: keep them concise, deterministic (no "be creative"),
+# and include a `rubric` field if you plan to run judge.py. The rubric should
+# describe what a correct, complete answer looks like — that's what the judge
+# model compares responses against.
+
+prompts:
+  # ── code-generation ─────────────────────────────────────────────────
+  - id: codegen-comprehension
+    category: code-generation
+    difficulty: trivial
+    prompt: "Write a Python one-liner that returns a list of squares for 0 through 9."
+    rubric: "A single expression like [i*i for i in range(10)]. Must be one line. Must produce [0,1,4,9,16,25,36,49,64,81]."
+
+  - id: codegen-json-load
+    category: code-generation
+    difficulty: easy
+    prompt: "Write a Python function `load_keys(path)` that reads a JSON file and returns a sorted list of its top-level keys. Include type hints and a one-line docstring."
+    rubric: "Function with signature load_keys(path: str) -> list[str]. Opens file, loads JSON, returns sorted(data.keys()). Handles only the happy path. Type hints present. Docstring present."
+
+  - id: codegen-binary-search
+    category: code-generation
+    difficulty: medium
+    prompt: "Write a Python function `binary_search(arr, target)` that returns the index of target in a sorted list, or -1 if not found. Iterative, not recursive."
+    rubric: "Iterative implementation with low/high pointers and mid calculation. Returns -1 on miss. Handles empty list. No off-by-one errors."
+
+  - id: codegen-decorator
+    category: code-generation
+    difficulty: medium
+    prompt: "Write a Python decorator `retry(max_attempts=3, delay=1.0)` that retries the wrapped function on any exception, sleeping `delay` seconds between attempts. After max_attempts, re-raise."
+    rubric: "Decorator factory accepting max_attempts and delay. Uses functools.wraps. Catches Exception, sleeps via time.sleep, re-raises after exhausting attempts."
+
+  - id: codegen-async-retry
+    category: code-generation
+    difficulty: hard
+    prompt: "Write a Python `async def fetch_with_retry(client, url, max_attempts=3)` that retries an httpx GET on connection errors with exponential backoff (1s, 2s, 4s), but does NOT retry on 4xx responses. Returns the final response or re-raises."
+    rubric: "Async function. Catches httpx.ConnectError or similar transport errors. Does NOT retry on 4xx (raises immediately or returns). Exponential backoff with asyncio.sleep. Re-raises after max_attempts."
+
+  # ── code-editing ────────────────────────────────────────────────────
+  - id: edit-refactor-loop
+    category: code-editing
+    difficulty: easy
+    prompt: |
+      Refactor this to a list comprehension:
+
+      def squares(n):
+          result = []
+          for i in range(n):
+              result.append(i * i)
+          return result
+    rubric: "Replaced with `return [i*i for i in range(n)]` or equivalent single-line comprehension."
+
+  - id: edit-add-error-handling
+    category: code-editing
+    difficulty: medium
+    prompt: |
+      Add error handling to this function. It should return None if the file is missing or unreadable, log the error, and not crash.
+
+      def read_config(path):
+          with open(path) as f:
+              return json.load(f)
+    rubric: "Wraps file open + json.load in try/except. Catches FileNotFoundError, PermissionError, and json.JSONDecodeError (or generic OSError + JSONDecodeError). Logs via logging.error or print to stderr. Returns None on failure."
+
+  - id: edit-fix-off-by-one
+    category: code-editing
+    difficulty: medium
+    prompt: |
+      This function is supposed to return the last N items from a list. It has an off-by-one bug. Fix it.
+
+      def last_n(items, n):
+          return items[len(items) - n - 1:]
+    rubric: "Bug: subtracting an extra 1. Fix is `items[-n:]` or `items[len(items) - n:]`. Also acceptable: handle n > len(items) or n <= 0 cases."
+
+  - id: edit-optimize-quadratic
+    category: code-editing
+    difficulty: hard
+    prompt: |
+      This is O(n²). Make it O(n) while preserving the same return value.
+
+      def first_duplicate(items):
+          for i, x in enumerate(items):
+              for j, y in enumerate(items):
+                  if i != j and x == y:
+                      return x
+          return None
+    rubric: "Uses a set to track seen items in a single pass. Returns first item already in the set. Preserves None on no duplicate. Note: original returns the lowest-index pair member; correct fix returns the second occurrence, which is acceptable as long as the semantic is documented or matches reasonable interpretation."
+
+  # ── debugging ───────────────────────────────────────────────────────
+  - id: debug-module-not-found
+    category: debugging
+    difficulty: trivial
+    prompt: "I got `ModuleNotFoundError: No module named 'requests'` running my Python script. What's the fix?"
+    rubric: "`pip install requests` (or pip3, or python -m pip install, or in the active venv). Bonus for mentioning virtual environments."
+
+  - id: debug-attribute-error
+    category: debugging
+    difficulty: easy
+    prompt: |
+      What does this error mean and how do I fix it?
+
+      Traceback (most recent call last):
+        File "main.py", line 5, in <module>
+          print(user.name)
+      AttributeError: 'NoneType' object has no attribute 'name'
+    rubric: "Explains that `user` is None — the lookup or assignment returned None. Fix is to check for None before accessing .name (e.g., `if user: ...`), or fix the upstream code that returned None unexpectedly."
+
+  - id: debug-closure-bug
+    category: debugging
+    difficulty: medium
+    prompt: |
+      Why does this print [3, 3, 3] instead of [0, 1, 2]? Fix it.
+
+      callbacks = []
+      for i in range(3):
+          callbacks.append(lambda: i)
+      print([cb() for cb in callbacks])
+    rubric: "Classic late-binding closure bug — lambdas all reference the same `i`, which has its final value of 2 after the loop (but i is 2 when read, not 3 — the prompt is slightly off but the fix is the same). Fix: `lambda i=i: i` or use a factory function. A strong answer notes that the expected output is actually [2,2,2] (loops in 0..2), or accepts the question framing and explains anyway."
+
+  - id: debug-race-condition
+    category: debugging
+    difficulty: hard
+    prompt: |
+      This counter looks correct but produces wrong totals under threading. Why?
+
+      class Counter:
+          def __init__(self):
+              self.value = 0
+          def increment(self):
+              self.value = self.value + 1
+
+      # With 10 threads each incrementing 1000 times, final value is often <10000.
+    rubric: "Identifies the read-modify-write race: `self.value + 1` is not atomic. Multiple threads can read the same value, increment, and write back, losing updates. Fix: use threading.Lock around increment, or use itertools.count, or use atomic int. Bonus for explaining GIL doesn't help here because the +1 operation involves bytecode steps that can interleave."
+
+  # ── explanation ─────────────────────────────────────────────────────
+  - id: explain-undo-commit
+    category: explanation
+    difficulty: easy
+    prompt: "What's the git command to undo the most recent commit but keep the changes in my working directory?"
+    rubric: "`git reset --soft HEAD~1` (keeps changes staged) or `git reset HEAD~1` (keeps changes unstaged). NOT `git reset --hard` (that discards changes)."
+
+  - id: explain-ttft
+    category: explanation
+    difficulty: easy
+    prompt: "Explain what 'time to first token' (TTFT) means for an LLM, in one or two sentences."
+    rubric: "TTFT is the latency between sending a prompt and receiving the first generated token. Captures prompt processing + model warmup, separate from streaming throughput thereafter."
+
+  - id: explain-when-rebase
+    category: explanation
+    difficulty: medium
+    prompt: "When should I use `git rebase` versus `git merge` when integrating changes from main into my feature branch? Two or three sentences."
+    rubric: "Rebase keeps history linear, good for local feature branches before sharing. Merge preserves the actual history and is safer for shared branches. Don't rebase commits others have based work on. A strong answer mentions the 'never rebase public branches' rule."
+
+  # ── config ──────────────────────────────────────────────────────────
+  - id: config-nginx-minimal
+    category: config
+    difficulty: easy
+    prompt: "Write a minimal nginx server block that listens on port 80 and serves files from /var/www/html, with index.html as the default."
+    rubric: "Valid nginx server block: `server { listen 80; root /var/www/html; index index.html; }`. Optional but good: server_name, try_files for SPA support."
+
+  - id: config-docker-compose
+    category: config
+    difficulty: medium
+    prompt: "Write a minimal docker-compose.yml for a Python Flask app on port 5000 with a Redis cache. Use official images. Don't include healthchecks or volumes."
+    rubric: "Two services: app (Python image, exposed/mapped 5000) and redis (redis:alpine or redis:7). Compose v3 or v3.x syntax. Depends_on connecting app to redis."
+
+  - id: config-k8s-deployment
+    category: config
+    difficulty: hard
+    prompt: "Write a Kubernetes Deployment manifest for an app called `api` (image: `myorg/api:v1`), 3 replicas, exposing port 8080, with a secret named `api-creds` mounted as environment variables."
+    rubric: "apiVersion: apps/v1, kind: Deployment, 3 replicas, container with image and containerPort 8080. envFrom: secretRef name: api-creds (preferred) or env entries with secretKeyRef. Labels and selectors match. Strong answer also includes resource requests."
+
+  # ── tool-use (reasoning about tool calls, not actual function-calling) ──
+  - id: tooluse-single-read
+    category: tool-use
+    difficulty: easy
+    prompt: "I want to know the contents of /etc/hosts on a Linux machine. What single shell command would a coding agent run? Just the command, no explanation."
+    rubric: "`cat /etc/hosts` or `less /etc/hosts` or equivalent. Single line. No surrounding prose."
+
+  - id: tooluse-search-filter
+    category: tool-use
+    difficulty: medium
+    prompt: "I want to find all Python files in src/ that contain the string 'TODO', showing line numbers. Give me the exact ripgrep command."
+    rubric: "`rg -n 'TODO' src/ -t py` or `rg -n 'TODO' --type py src/` or equivalent with `--glob '*.py'`. Must include line numbers (-n) and limit to Python files."
+
+  - id: tooluse-multi-step
+    category: tool-use
+    difficulty: hard
+    prompt: |
+      A coding agent has these tools: `bash`, `read_file`, `write_file`, `grep`.
+      Task: find every file under src/ that imports `requests`, then write the list to imports.txt.
+      List the tool calls in order. Be exact about arguments. Don't write prose.
+    rubric: "Two steps: (1) grep for 'import requests' or 'from requests' in src/, capturing file list; (2) write_file to imports.txt with the result. Or one bash step: `grep -rl 'requests' src/ > imports.txt`. Strong answer keeps both `import requests` AND `from requests`."
+
+  # ── hard-reasoning (designed to fail small models) ──────────────────
+  - id: hard-architecture-tradeoff
+    category: hard-reasoning
+    difficulty: hard
+    prompt: |
+      I'm designing an event-driven system. Events arrive at ~1000/sec with 1KB payloads.
+      Consumers need at-least-once delivery and ordering within a partition key.
+      Should I use Kafka, Redis Streams, or AWS SQS FIFO? Give one recommendation
+      with the two key tradeoffs that drove the choice. Be concrete.
+    rubric: "Recommends Kafka or Redis Streams (NOT SQS FIFO — SQS FIFO is capped at 300 msg/sec per group). Two specific tradeoffs: e.g., Kafka has higher operational cost but better throughput and durability; Redis Streams is simpler but persistence depends on AOF/snapshot config. SQS FIFO disqualified for throughput. Strong answer also mentions partition key → Kafka partition or Redis consumer group."
+
+  - id: hard-security-review
+    category: hard-reasoning
+    difficulty: hard
+    prompt: |
+      Review this Python Flask route for security issues. List each issue and its severity (low/medium/high).
+
+      @app.route("/run")
+      def run():
+          cmd = request.args.get("cmd")
+          result = os.popen(cmd).read()
+          return result
+    rubric: "Must identify: (1) RCE via shell injection — HIGH (arbitrary command execution via cmd param), (2) Possibly: no auth check — HIGH, (3) Possibly: leaks output without sanitization — MEDIUM. Strong answer suggests using subprocess with shell=False and an allowlist, or removing the endpoint entirely."
+
+  - id: hard-correctness
+    category: hard-reasoning
+    difficulty: hard
+    prompt: |
+      This function is supposed to return True if and only if `s` is a valid balanced-bracket string
+      using (), [], {}. It has a bug. Find it and fix it.
+
+      def is_balanced(s):
+          stack = []
+          pairs = {")": "(", "]": "[", "}": "{"}
+          for c in s:
+              if c in pairs.values():
+                  stack.append(c)
+              elif c in pairs:
+                  if stack.pop() != pairs[c]:
+                      return False
+          return True
+    rubric: "Bug: `stack.pop()` on empty stack raises IndexError when a closing bracket appears with no matching opener (e.g., input ')'). Fix: check `if not stack: return False` before pop. Also: final check should be `return not stack` to reject unmatched openers (e.g., input '('). A correct fix addresses both: empty-stack pop AND final non-empty stack."
