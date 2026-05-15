@@ -22,7 +22,7 @@ The project name on GitHub is `rossim2i2/llmux`. The local install path is still
 # Start the gateway (manual)
 cd ~/Repos/github.com/rossim2i2/model-router
 export $(grep -v '^#' .env | xargs)
-.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8001
+.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8001
 
 # Start via systemd
 systemctl --user start model-router

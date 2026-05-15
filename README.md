@@ -428,7 +428,7 @@ journalctl --user -u model-router -f
 # Manual start
 cd ~/Repos/github.com/rossim2i2/model-router
 export $(grep -v '^#' .env | xargs)
-.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8001
+.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8001
 
 # Check health
 curl http://localhost:8001/health
