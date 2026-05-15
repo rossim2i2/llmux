@@ -443,7 +443,3 @@ curl http://localhost:8001/v1/models
 
 - **Benchmark narrative:** [`benchmark/BENCHMARK-RESULTS.md`](benchmark/BENCHMARK-RESULTS.md) — full write-up of the 16-model evaluation
 - **Aggregated metrics (sanitized):** [`benchmark/results/summary.json`](benchmark/results/summary.json) — per-model run counts, median latency/cost, judge scores. No raw prompts or responses.
-- **Integration sessions:** captured runs through real CLI tools
-  - [`benchmark/results/integration-claude-code-20260514-111038.md`](benchmark/results/integration-claude-code-20260514-111038.md)
-  - [`benchmark/results/integration-claude-code-20260514-115405.md`](benchmark/results/integration-claude-code-20260514-115405.md)
-  - [`benchmark/results/integration-codex-20260514-134802.md`](benchmark/results/integration-codex-20260514-134802.md)
