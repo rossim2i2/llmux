@@ -59,7 +59,7 @@ if curl -sf "${GATEWAY_URL}/health" > /dev/null 2>&1; then
 else
     fail
     echo "    Gateway not running. Start it first:"
-    echo "    cd ${REPO_ROOT} && .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8001"
+    echo "    cd ${REPO_ROOT} && .venv/bin/uvicorn main:app --host 127.0.0.1 --port 8001"
     exit 1
 fi
 
