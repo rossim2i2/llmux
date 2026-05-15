@@ -5,8 +5,9 @@ router.db
 benchmark_results.json
 benchmark_quick_results.json
 
-# Benchmark output: ignore generated runs, but keep the directory and any committed samples
+# Benchmark output: ignore generated runs, but keep summary and any committed samples
 benchmark/results/*.json
+!benchmark/results/summary.json
 !benchmark/results/sample.json
 benchmark/__pycache__/
 .env

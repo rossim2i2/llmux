@@ -1,0 +1,231 @@
+{
+  "schema_version": 1,
+  "description": "Aggregated benchmark metrics across all judged runs. Sanitized: no prompt or response text. See BENCHMARK-RESULTS.md for narrative.",
+  "generated_at": "2026-05-15",
+  "models": {
+    "claude-haiku-4-5": {
+      "runs": 75,
+      "median_ttft_ms": 554.825,
+      "median_total_ms": 2319.375,
+      "median_tokens_per_sec": 100.542,
+      "median_cost_usd": 0.001,
+      "total_cost_usd": 0.1281,
+      "median_correctness": 5,
+      "median_completeness": 5,
+      "median_clarity": 5,
+      "source_files": [
+        "frontier-anthropic.judged.json"
+      ]
+    },
+    "claude-opus-4-7": {
+      "runs": 75,
+      "median_ttft_ms": 1557.148,
+      "median_total_ms": 6036.791,
+      "median_tokens_per_sec": 60.416,
+      "median_cost_usd": 0.009,
+      "total_cost_usd": 0.8166,
+      "median_correctness": 5.0,
+      "median_completeness": 5.0,
+      "median_clarity": 5.0,
+      "source_files": [
+        "frontier-anthropic.judged.json"
+      ]
+    },
+    "claude-sonnet-4-6": {
+      "runs": 75,
+      "median_ttft_ms": 1018.51,
+      "median_total_ms": 6840.865,
+      "median_tokens_per_sec": 55.148,
+      "median_cost_usd": 0.006,
+      "total_cost_usd": 0.5425,
+      "median_correctness": 5,
+      "median_completeness": 5,
+      "median_clarity": 5,
+      "source_files": [
+        "frontier-anthropic.judged.json"
+      ]
+    },
+    "deepseek-coder-v2-16b-local": {
+      "runs": 50,
+      "median_ttft_ms": 65.602,
+      "median_total_ms": 2329.371,
+      "median_tokens_per_sec": 131.221,
+      "median_cost_usd": 0.0,
+      "total_cost_usd": 0.0,
+      "median_correctness": 4.0,
+      "median_completeness": 4.0,
+      "median_clarity": 5.0,
+      "source_files": [
+        "full-local-comparison.judged.json"
+      ]
+    },
+    "deepseek-v4-pro": {
+      "runs": 25,
+      "median_ttft_ms": 10500.513,
+      "median_total_ms": 15010.727,
+      "median_tokens_per_sec": 25.822,
+      "median_cost_usd": 0.001,
+      "total_cost_usd": 0.0156,
+      "median_correctness": 5,
+      "median_completeness": 5,
+      "median_clarity": 5,
+      "source_files": [
+        "frontier-open.judged.json"
+      ]
+    },
+    "gemini-2.5-flash": {
+      "runs": 25,
+      "median_ttft_ms": 9565.297,
+      "median_total_ms": 9565.485,
+      "median_tokens_per_sec": 17.188,
+      "median_cost_usd": 0.0,
+      "total_cost_usd": 0.0215,
+      "median_correctness": 4,
+      "median_completeness": 4,
+      "median_clarity": 5,
+      "source_files": [
+        "frontier-google.judged.json"
+      ]
+    },
+    "gemini-2.5-pro": {
+      "runs": 25,
+      "median_ttft_ms": 17053.945,
+      "median_total_ms": 17877.288,
+      "median_tokens_per_sec": 16.728,
+      "median_cost_usd": 0.002,
+      "total_cost_usd": 0.0763,
+      "median_correctness": 4.0,
+      "median_completeness": 3.5,
+      "median_clarity": 5.0,
+      "source_files": [
+        "frontier-google.judged.json"
+      ]
+    },
+    "gemma-4-26b": {
+      "runs": 25,
+      "median_ttft_ms": 323.031,
+      "median_total_ms": 7658.655,
+      "median_tokens_per_sec": 43.611,
+      "median_cost_usd": 0.0,
+      "total_cost_usd": 0.0032,
+      "median_correctness": 5,
+      "median_completeness": 5,
+      "median_clarity": 5,
+      "source_files": [
+        "frontier-open.judged.json"
+      ]
+    },
+    "gemma3:4b-local": {
+      "runs": 50,
+      "median_ttft_ms": 135.056,
+      "median_total_ms": 4601.54,
+      "median_tokens_per_sec": 133.933,
+      "median_cost_usd": 0.0,
+      "total_cost_usd": 0.0,
+      "median_correctness": 4.0,
+      "median_completeness": 4.0,
+      "median_clarity": 5.0,
+      "source_files": [
+        "full-local-comparison.judged.json"
+      ]
+    },
+    "gpt-5.4-mini": {
+      "runs": 75,
+      "median_ttft_ms": 433.034,
+      "median_total_ms": 1086.569,
+      "median_tokens_per_sec": 116.481,
+      "median_cost_usd": 0.001,
+      "total_cost_usd": 0.0518,
+      "median_correctness": 5,
+      "median_completeness": 5,
+      "median_clarity": 5,
+      "source_files": [
+        "frontier-openai.judged.json"
+      ]
+    },
+    "gpt-5.4-nano": {
+      "runs": 75,
+      "median_ttft_ms": 601.693,
+      "median_total_ms": 1615.158,
+      "median_tokens_per_sec": 74.398,
+      "median_cost_usd": 0.0,
+      "total_cost_usd": 0.0083,
+      "median_correctness": 5.0,
+      "median_completeness": 5.0,
+      "median_clarity": 5.0,
+      "source_files": [
+        "frontier-openai.judged.json"
+      ]
+    },
+    "gpt-5.5": {
+      "runs": 75,
+      "median_ttft_ms": 1818.844,
+      "median_total_ms": 4170.695,
+      "median_tokens_per_sec": 53.263,
+      "median_cost_usd": 0.007,
+      "total_cost_usd": 0.7494,
+      "median_correctness": 5,
+      "median_completeness": 5,
+      "median_clarity": 5,
+      "source_files": [
+        "frontier-openai.judged.json"
+      ]
+    },
+    "kimi-k2.6": {
+      "runs": 25,
+      "median_ttft_ms": 27236.686,
+      "median_total_ms": 33039.274,
+      "median_tokens_per_sec": 44.764,
+      "median_cost_usd": 0.004,
+      "total_cost_usd": 0.1704,
+      "median_correctness": 5,
+      "median_completeness": 5,
+      "median_clarity": 5,
+      "source_files": [
+        "frontier-open.judged.json"
+      ]
+    },
+    "qwen2.5-coder-7b-local": {
+      "runs": 50,
+      "median_ttft_ms": 67.745,
+      "median_total_ms": 1844.478,
+      "median_tokens_per_sec": 104.569,
+      "median_cost_usd": 0.0,
+      "total_cost_usd": 0.0,
+      "median_correctness": 5.0,
+      "median_completeness": 4.0,
+      "median_clarity": 5.0,
+      "source_files": [
+        "full-local-comparison.judged.json"
+      ]
+    },
+    "qwen3.5-9b": {
+      "runs": 25,
+      "median_ttft_ms": 8370.446,
+      "median_total_ms": 14777.113,
+      "median_tokens_per_sec": 56.652,
+      "median_cost_usd": 0.0,
+      "total_cost_usd": 0.0101,
+      "median_correctness": 5,
+      "median_completeness": 5,
+      "median_clarity": 5,
+      "source_files": [
+        "frontier-open.judged.json"
+      ]
+    },
+    "qwen3:4b-local": {
+      "runs": 50,
+      "median_ttft_ms": 65.967,
+      "median_total_ms": 14941.199,
+      "median_tokens_per_sec": 136.998,
+      "median_cost_usd": 0.0,
+      "total_cost_usd": 0.0,
+      "median_correctness": 2.0,
+      "median_completeness": 2.0,
+      "median_clarity": 1.0,
+      "source_files": [
+        "full-local-comparison.judged.json"
+      ]
+    }
+  }
+}

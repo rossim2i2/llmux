@@ -4,6 +4,8 @@ A local FastAPI gateway that routes prompts between your GPU and frontier APIs. 
 
 **Status:** Phases 1–3 shipped — data capture, in-prompt feedback, LLM-as-judge. Article in progress.
 
+> **A note on naming.** This repo is `rossim2i2/llmux` on GitHub but the working directory and systemd service are still `model-router` on the author's machine. LLMux is the project name going forward; `model-router` references reflect the local install path and have not been renamed yet.
+
 ----
 
 ## What Works Today
@@ -147,12 +149,12 @@ letta --backend local connect lmstudio
 3. Run with a local model:
 
 ```bash
-letta --backend local -p "What is 2+2?" --model lmstudio/qwen3:4b-local
+letta --backend local -p "What is 2+2?" --model lmstudio/qwen2.5-coder-7b-local
 ```
 
 **How routing works:**
 
-The local backend sends model names prefixed with `lmstudio/` (e.g., `lmstudio/qwen3:4b-local`). The gateway strips the prefix and applies the classifier. The local backend bundles tool definitions into the user message as content-block arrays (~1.3K chars), but the gateway's `_extract_user_intent()` parses the content blocks and extracts only the last `type: "text"` block — the user's actual message. This means:
+The local backend sends model names prefixed with `lmstudio/` (e.g., `lmstudio/qwen2.5-coder-7b-local`). The gateway strips the prefix and applies the classifier. The local backend bundles tool definitions into the user message as content-block arrays (~1.3K chars), but the gateway's `_extract_user_intent()` parses the content blocks and extracts only the last `type: "text"` block — the user's actual message. This means:
 - "What is 2+2?" (12 chars extracted) → local
 - "Design a distributed system..." (150 chars, architecture signal) → frontier
 
@@ -330,7 +332,7 @@ curl http://localhost:8001/health
 # Test Chat Completions
 curl http://localhost:8001/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen3:4b-local","messages":[{"role":"user","content":"What is 2+2?"}]}'
+  -d '{"model":"qwen2.5-coder-7b-local","messages":[{"role":"user","content":"What is 2+2?"}]}'
 
 # Test Responses API
 curl http://localhost:8001/v1/responses \
@@ -340,7 +342,7 @@ curl http://localhost:8001/v1/responses \
 # Force a specific route
 curl "http://localhost:8001/v1/chat/completions?route=gpt-5.5" \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen3:4b-local","messages":[{"role":"user","content":"What is 2+2?"}]}'
+  -d '{"model":"qwen2.5-coder-7b-local","messages":[{"role":"user","content":"What is 2+2?"}]}'
 ```
 
 ----
@@ -351,13 +353,12 @@ Models and routing are defined in `config.yaml`:
 
 ```yaml
 models:
-  qwen3:4b-local:
+  qwen2.5-coder-7b-local:
     provider: ollama
     endpoint: http://localhost:11434/api/chat
-    model_name: qwen3:4b
-    think: false
+    model_name: qwen2.5-coder:7b
     default_options:
-      temperature: 0.7
+      temperature: 0.2
 
   gpt-5.4-mini:
     provider: openai
@@ -435,3 +436,14 @@ curl http://localhost:8001/health
 # List available models
 curl http://localhost:8001/v1/models
 ```
+
+----
+
+## Evidence
+
+- **Benchmark narrative:** [`benchmark/BENCHMARK-RESULTS.md`](benchmark/BENCHMARK-RESULTS.md) — full write-up of the 16-model evaluation
+- **Aggregated metrics (sanitized):** [`benchmark/results/summary.json`](benchmark/results/summary.json) — per-model run counts, median latency/cost, judge scores. No raw prompts or responses.
+- **Integration sessions:** captured runs through real CLI tools
+  - [`benchmark/results/integration-claude-code-20260514-111038.md`](benchmark/results/integration-claude-code-20260514-111038.md)
+  - [`benchmark/results/integration-claude-code-20260514-115405.md`](benchmark/results/integration-claude-code-20260514-115405.md)
+  - [`benchmark/results/integration-codex-20260514-134802.md`](benchmark/results/integration-codex-20260514-134802.md)

@@ -32,15 +32,15 @@ The point of this suite is not to crown a winner. It's to map where small local 
 ### Quick smoke test
 
 ```bash
-# 5 prompts, qwen3:4b-local only — finishes in a few seconds
-python benchmark/bench.py --models qwen3:4b-local --limit 5
+# 5 prompts, qwen2.5-coder-7b-local only — finishes in a few seconds
+python benchmark/bench.py --models qwen2.5-coder-7b-local --limit 5
 ```
 
 ### Full local-only run
 
 ```bash
 # All 25 prompts × 3 iterations each
-python benchmark/bench.py --local-models qwen3:4b-local
+python benchmark/bench.py --local-models qwen2.5-coder-7b-local
 ```
 
 ### Local vs. frontier comparison
@@ -48,14 +48,14 @@ python benchmark/bench.py --local-models qwen3:4b-local
 ```bash
 # Local runs 3x per prompt (warm-up tolerance); frontier runs 1x (cost control)
 python benchmark/bench.py \
-    --local-models qwen3:4b-local qwen3:8b-local \
-    --frontier-models gpt-4.1-nano
+    --local-models qwen2.5-coder-7b-local deepseek-coder-v2-16b-local \
+    --frontier-models gpt-5.4-nano
 ```
 
 ### Filter by category or difficulty
 
 ```bash
-python benchmark/bench.py --models qwen3:4b-local \
+python benchmark/bench.py --models qwen2.5-coder-7b-local \
     --categories code-generation tool-use \
     --difficulties medium hard
 ```
@@ -97,7 +97,7 @@ All cost estimates assume the default 25 prompts and modest response lengths.
   },
   "runs": [
     {
-      "model": "qwen3:4b-local",
+      "model": "qwen2.5-coder-7b-local",
       "prompt_id": "codegen-binary-search",
       "category": "code-generation",
       "difficulty": "medium",
