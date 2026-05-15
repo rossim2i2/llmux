@@ -201,7 +201,7 @@ The gateway routes requests using a **multi-signal prompt classifier** that scor
 
 | Tier | Score | Model | Cost/1K input | When |
 |------|-------|-------|---------------|------|
-| **Local** | ≤ 0 | `qwen3:4b-local` (Ollama) | $0.00 | Simple lookups, trivial code, factual questions |
+| **Local** | ≤ 0 | `qwen2.5-coder-7b-local` (Ollama) | $0.00 | Simple lookups, trivial code, factual questions |
 | **Mid** | 1–3 | `gpt-5.4-nano` (OpenAI) | $0.11 | Code writing, debugging, config generation |
 | **Frontier** | ≥ 4 | `gpt-5.4-mini` (OpenAI) | $0.69 | Architecture, security review, multi-step reasoning |
 
@@ -371,7 +371,7 @@ models:
     aliases: [gpt-5-mini]
 
 routing:
-  default: qwen3:4b-local
+  default: qwen2.5-coder-7b-local
   mid: gpt-5.4-nano
   frontier: gpt-5.4-mini
   force_param: route

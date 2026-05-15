@@ -173,7 +173,7 @@ models:
     cost_per_1m_output: 15.00
 
 routing:
-  default: qwen3:4b-local
+  default: qwen2.5-coder-7b-local
   mid: gpt-5.4-nano
   frontier: gpt-5.4-mini
   force_param: route
