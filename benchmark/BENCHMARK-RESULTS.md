@@ -5,7 +5,7 @@ Data for article drafting. All numbers from real runs on May 13-14, 2026.
 ## Hardware
 
 - **CPU:** AMD Ryzen 9 9950X3D (16-core)
-- **RAM:** 64GB DDR5
+- **RAM:** 128GB DDR5
 - **GPU:** AMD Radeon RX 7900 XTX (24GB VRAM) — enthusiast tier, ~$700-900
 - **OS:** Arch Linux, Wayland, ROCm
 

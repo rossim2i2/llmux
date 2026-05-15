@@ -92,7 +92,7 @@ All cost estimates assume the default 25 prompts and modest response lengths.
   "hardware": {
     "platform": "...",
     "cpu_model": "...",
-    "ram_gb": 64.0,
+    "ram_gb": 128.0,
     "gpu": ["AMD Radeon RX 7900 XTX"]
   },
   "runs": [
