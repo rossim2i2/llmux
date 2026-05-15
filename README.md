@@ -293,6 +293,25 @@ sqlite3 router.db "SELECT chosen_tier, ideal_tier, routing_outcome, label_source
 
 Body capture is enabled by default — the feedback loop needs the raw text to identify what's misclassified. Disable with `LLMUX_CAPTURE_BODIES=0` in the environment if you don't want prompts/responses persisted.
 
+### LLM-as-judge (Phase 3)
+
+A daily cron samples ~50 unjudged requests and sends prompt+response to a judge model (gpt-5-nano). The judge evaluates:
+
+- **Complexity**: What tier was actually required? (local/mid/frontier)
+- **Quality**: How good was the response? (1-5)
+- **Reasoning**: One-sentence explanation
+
+Results update `judged_quality`, `judged_at`, `judged_by`, `judged_reasoning`, and `ideal_tier` columns.
+
+Run manually:
+```bash
+cd ~/Repos/github.com/rossim2i2/model-router
+export $(grep -v '^#' .env | xargs)
+./.venv/bin/python scripts/judge-recent.py --limit 50 --verbose
+```
+
+Cost: ~$0.50/day at 50 requests/day with gpt-5-nano.
+
 ----
 
 ## Quick Start
