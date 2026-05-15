@@ -6,7 +6,9 @@ import os
 import re
 import sqlite3
 import time
+import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
@@ -16,6 +18,10 @@ from fastapi.responses import StreamingResponse
 
 CONFIG_PATH = Path(__file__).with_name("config.yaml")
 DB_PATH = Path(__file__).with_name("router.db")
+
+# Privacy gate: set LLMUX_CAPTURE_BODIES=0 to disable prompt/response storage.
+# Default is on — the feedback loop depends on raw data.
+CAPTURE_BODIES = os.environ.get("LLMUX_CAPTURE_BODIES", "1") != "0"
 
 # Provider API keys from environment — used when client doesn't supply one
 # or supplies a placeholder (e.g., "sk-placeholder" from proxy configs).
@@ -84,6 +90,11 @@ config = Config(CONFIG_PATH)
 
 
 def init_db():
+    """Initialize schema and run idempotent migrations.
+
+    New columns are added via ALTER TABLE wrapped in try/except so the
+    function is safe to call on every startup.
+    """
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
         """
@@ -101,16 +112,87 @@ def init_db():
         )
         """
     )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ts ON requests(timestamp)")
+
+    # Migration: add feedback-loop columns. ALTER TABLE ADD COLUMN is
+    # idempotent only at the schema level — we wrap each in try/except so
+    # re-running on an already-migrated DB is a no-op.
+    migrations = [
+        "ALTER TABLE requests ADD COLUMN request_id TEXT",
+        "ALTER TABLE requests ADD COLUMN client_ip TEXT",
+        "ALTER TABLE requests ADD COLUMN prompt_text TEXT",
+        "ALTER TABLE requests ADD COLUMN response_text TEXT",
+        "ALTER TABLE requests ADD COLUMN score INTEGER",
+        "ALTER TABLE requests ADD COLUMN signals TEXT",
+        "ALTER TABLE requests ADD COLUMN chosen_tier TEXT",
+        "ALTER TABLE requests ADD COLUMN forced_tier INTEGER DEFAULT 0",
+        "ALTER TABLE requests ADD COLUMN escalation_signal INTEGER DEFAULT 0",
+        "ALTER TABLE requests ADD COLUMN response_truncated INTEGER DEFAULT 0",
+        "ALTER TABLE requests ADD COLUMN response_short INTEGER DEFAULT 0",
+        "ALTER TABLE requests ADD COLUMN response_error INTEGER DEFAULT 0",
+        "ALTER TABLE requests ADD COLUMN feedback_rating INTEGER",
+        "ALTER TABLE requests ADD COLUMN feedback_at REAL",
+        "ALTER TABLE requests ADD COLUMN feedback_comment TEXT",
+        "ALTER TABLE requests ADD COLUMN judged_quality INTEGER",
+        "ALTER TABLE requests ADD COLUMN judged_at REAL",
+        "ALTER TABLE requests ADD COLUMN judged_by TEXT",
+        "ALTER TABLE requests ADD COLUMN judged_reasoning TEXT",
+        "ALTER TABLE requests ADD COLUMN ideal_tier TEXT",
+    ]
+    for stmt in migrations:
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError as e:
+            # "duplicate column name" — column already exists
+            if "duplicate column" not in str(e).lower():
+                raise
+
+    # Indexes for common queries
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_request_id ON requests(request_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_unjudged ON requests(timestamp) WHERE judged_quality IS NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_client_ip ON requests(client_ip, timestamp)")
+
+    # View: misroutes — labeled training data for classifier improvement.
+    # A request enters this view as soon as it has an ideal_tier set, which
+    # happens via (a) explicit feedback API, (b) judge process, or (c)
+    # correlation from a subsequent user escalation.
+    conn.execute("DROP VIEW IF EXISTS misroutes")
     conn.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_ts ON requests(timestamp)
+        CREATE VIEW misroutes AS
+        SELECT
+            request_id,
+            timestamp,
+            prompt_text,
+            response_text,
+            score,
+            signals,
+            chosen_tier,
+            ideal_tier,
+            CASE
+                WHEN ideal_tier IS NULL THEN NULL
+                WHEN chosen_tier = ideal_tier THEN 'correct'
+                WHEN (chosen_tier = 'local' AND ideal_tier IN ('mid', 'frontier'))
+                  OR (chosen_tier = 'mid' AND ideal_tier = 'frontier') THEN 'under_routed'
+                ELSE 'over_routed'
+            END AS routing_outcome,
+            CASE
+                WHEN feedback_rating IS NOT NULL THEN 'user_feedback'
+                WHEN judged_quality IS NOT NULL THEN 'llm_judge'
+                WHEN escalation_signal = 1 THEN 'user_escalate'
+                ELSE 'correlated_escalation'
+            END AS label_source
+        FROM requests
+        WHERE ideal_tier IS NOT NULL
         """
     )
+
     conn.commit()
     conn.close()
 
 
 def log_request(
+    request_id: str,
     prompt_hash: str,
     model: str,
     provider: str,
@@ -119,17 +201,43 @@ def log_request(
     latency_ms: float,
     route_reason: str,
     cost_estimate: float | None,
-):
+    *,
+    client_ip: str | None = None,
+    prompt_text: str | None = None,
+    response_text: str | None = None,
+    score: int | None = None,
+    signals: list[str] | None = None,
+    chosen_tier: str | None = None,
+    forced_tier: bool = False,
+    escalation_signal: bool = False,
+    response_truncated: bool = False,
+    response_short: bool = False,
+    response_error: bool = False,
+) -> int:
+    """Insert a request row and return the row ID.
+
+    Body capture is controlled by CAPTURE_BODIES — when off, prompt_text
+    and response_text are stored as NULL even if provided.
+    """
+    captured_prompt = prompt_text if CAPTURE_BODIES else None
+    captured_response = response_text if CAPTURE_BODIES else None
+    signals_json = json.dumps(signals) if signals is not None else None
+
     conn = sqlite3.connect(DB_PATH)
-    conn.execute(
+    cursor = conn.execute(
         """
         INSERT INTO requests
-            (timestamp, prompt_hash, model, provider, input_tokens, output_tokens,
-             latency_ms, route_reason, cost_estimate)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (request_id, timestamp, client_ip, prompt_hash, model, provider,
+             input_tokens, output_tokens, latency_ms, route_reason, cost_estimate,
+             prompt_text, response_text, score, signals, chosen_tier,
+             forced_tier, escalation_signal,
+             response_truncated, response_short, response_error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
+            request_id,
             time.time(),
+            client_ip,
             prompt_hash,
             model,
             provider,
@@ -138,10 +246,72 @@ def log_request(
             latency_ms,
             route_reason,
             cost_estimate,
+            captured_prompt,
+            captured_response,
+            score,
+            signals_json,
+            chosen_tier,
+            1 if forced_tier else 0,
+            1 if escalation_signal else 0,
+            1 if response_truncated else 0,
+            1 if response_short else 0,
+            1 if response_error else 0,
         ),
+    )
+    row_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return row_id
+
+
+def update_response(request_id: str, response_text: str, *,
+                    response_truncated: bool = False,
+                    response_short: bool = False,
+                    response_error: bool = False,
+                    output_tokens: int | None = None,
+                    cost_estimate: float | None = None):
+    """Update a logged request with the captured response text and heuristics.
+
+    Used after streaming completes to backfill the response data.
+    """
+    captured = response_text if CAPTURE_BODIES else None
+    conn = sqlite3.connect(DB_PATH)
+    # Build update dynamically so optional fields don't overwrite with None
+    fields = ["response_text = ?", "response_truncated = ?",
+              "response_short = ?", "response_error = ?"]
+    params: list = [captured, 1 if response_truncated else 0,
+                    1 if response_short else 0, 1 if response_error else 0]
+    if output_tokens is not None:
+        fields.append("output_tokens = ?")
+        params.append(output_tokens)
+    if cost_estimate is not None:
+        fields.append("cost_estimate = ?")
+        params.append(cost_estimate)
+    params.append(request_id)
+    conn.execute(
+        f"UPDATE requests SET {', '.join(fields)} WHERE request_id = ?",
+        params,
     )
     conn.commit()
     conn.close()
+
+
+def _bearer(authorization: str) -> str:
+    """Extract bearer token from an Authorization header value."""
+    if authorization and authorization.startswith("Bearer "):
+        return authorization[7:]
+    return ""
+
+
+def _client_ip(request: Request) -> str | None:
+    """Resolve client IP from X-Forwarded-For or socket address."""
+    xff = request.headers.get("X-Forwarded-For")
+    if xff:
+        # First IP in the chain is the original client
+        return xff.split(",")[0].strip()
+    if request.client:
+        return request.client.host
+    return None
 
 
 def _resolve_api_key(provider: str, client_key: str) -> str:
@@ -176,6 +346,170 @@ def _extract_user_intent(content) -> str:
                 last_text = block.get("text", "")
         return last_text
     return str(content)
+
+
+# ── escalation prefix parsing ────────────────────────────────────────
+# Users can prefix their message with `!escalate`, `!frontier`, `!mid`,
+# or `!local` to override the classifier and signal feedback. The prefix
+# is stripped before the message is forwarded to the model.
+
+_ESCALATION_RE = re.compile(r"^\s*!(escalate|frontier|mid|local)\b\s*", re.IGNORECASE)
+
+
+def _parse_escalation_prefix(text: str) -> tuple[str, str | None]:
+    """Look for an escalation prefix at the start of the user's message.
+
+    Returns (cleaned_text, directive). Directive is one of:
+    - 'escalate' (bump one tier higher than classifier)
+    - 'frontier' / 'mid' / 'local' (force specific tier)
+    - None (no prefix; classifier decides)
+    """
+    if not text:
+        return text, None
+    match = _ESCALATION_RE.match(text)
+    if not match:
+        return text, None
+    directive = match.group(1).lower()
+    cleaned = text[match.end():]
+    return cleaned, directive
+
+
+def _strip_escalation_from_body(body: dict) -> str | None:
+    """Mutate body in place to strip escalation prefix from the last user message.
+
+    Handles both string and content-block formats. Returns the directive (or None).
+    The cleaned message is what gets forwarded to the model.
+    """
+    messages = body.get("messages", [])
+    if not messages:
+        return None
+    # Find the LAST user message
+    last_idx = None
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            last_idx = i
+            break
+    if last_idx is None:
+        return None
+    msg = messages[last_idx]
+    content = msg.get("content", "")
+
+    if isinstance(content, str):
+        cleaned, directive = _parse_escalation_prefix(content)
+        if directive:
+            msg["content"] = cleaned
+        return directive
+    if isinstance(content, list):
+        # Content blocks — strip the LAST text block (where user intent lives)
+        for block in reversed(content):
+            if isinstance(block, dict) and block.get("type") == "text":
+                cleaned, directive = _parse_escalation_prefix(block.get("text", ""))
+                if directive:
+                    block["text"] = cleaned
+                return directive
+        return None
+    return None
+
+
+def _apply_directive(decision: "RouteDecision", directive: str) -> "RouteDecision":
+    """Override a routing decision based on a user-supplied directive.
+
+    !escalate -> bump one tier higher than classifier picked
+    !frontier / !mid / !local -> force that tier
+    """
+    tier_order = ["local", "mid", "frontier"]
+
+    if directive == "escalate":
+        # Find current tier, go one up. If already frontier, stay there.
+        current = decision.chosen_tier or "local"
+        try:
+            idx = tier_order.index(current)
+        except ValueError:
+            idx = 0
+        target = tier_order[min(idx + 1, len(tier_order) - 1)]
+    elif directive in tier_order:
+        target = directive
+    else:
+        return decision
+
+    tier_to_route = {
+        "local": config.routing.get("default", config.default_model),
+        "mid": config.routing.get("mid", config.routing.get("frontier", config.default_model)),
+        "frontier": config.routing.get("frontier", config.default_model),
+    }
+    new_model = tier_to_route[target]
+
+    reason_extra = f"|directive=!{directive}"
+    return RouteDecision(
+        model_key=new_model,
+        reason=decision.reason + reason_extra,
+        score=decision.score,
+        signals=decision.signals,
+        chosen_tier=target,
+        forced_tier=True,
+        escalation_signal=(directive in ("escalate", "frontier")),
+        user_intent=decision.user_intent,
+    )
+
+
+def _tokens_for_similarity(text: str) -> set[str]:
+    """Lowercase word tokens for Jaccard similarity comparison."""
+    return set(re.findall(r"\w+", (text or "").lower()))
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a and not b:
+        return 0.0
+    return len(a & b) / max(1, len(a | b))
+
+
+def correlate_misroute(current_prompt: str, current_tier: str | None,
+                       client_ip: str | None) -> str | None:
+    """Try to label a recent request as under-routed.
+
+    When the user escalates, find the most recent prior request from the same
+    client within the last 5 minutes whose prompt is similar (Jaccard > 0.5)
+    and mark its `ideal_tier` to the current (escalated) tier.
+
+    Returns the request_id that was labeled, or None.
+    """
+    if not current_tier or not client_ip:
+        return None
+    if not current_prompt:
+        return None
+
+    window_start = time.time() - 5 * 60
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT request_id, prompt_text, chosen_tier
+            FROM requests
+            WHERE client_ip = ?
+              AND timestamp > ?
+              AND ideal_tier IS NULL
+              AND escalation_signal = 0
+              AND prompt_text IS NOT NULL
+            ORDER BY timestamp DESC
+            LIMIT 10
+            """,
+            (client_ip, window_start),
+        ).fetchall()
+        current_tokens = _tokens_for_similarity(current_prompt)
+        for row in rows:
+            sim = _jaccard(current_tokens, _tokens_for_similarity(row["prompt_text"]))
+            if sim > 0.5:
+                conn.execute(
+                    "UPDATE requests SET ideal_tier = ? WHERE request_id = ?",
+                    (current_tier, row["request_id"]),
+                )
+                conn.commit()
+                print(f"[MISROUTE] labeled {row['request_id'][:8]} as under_routed (was {row['chosen_tier']}, ideal {current_tier}, sim={sim:.2f})")
+                return row["request_id"]
+    finally:
+        conn.close()
+    return None
 
 
 # ── classifier signal patterns ───────────────────────────────────────
@@ -334,13 +668,58 @@ def classify_prompt(user_intent: str) -> tuple[int, list[str]]:
     return score, fired
 
 
-def choose_model(body: dict, force: str | None) -> tuple[str, str]:
-    """Return (model_key, route_reason)."""
+@dataclass
+class RouteDecision:
+    """The full routing decision for one request.
+
+    Carries both the model selection and the classifier's reasoning so
+    callers can log structured data for the feedback loop.
+    """
+    model_key: str
+    reason: str
+    score: int | None = None            # None when not classifier-driven
+    signals: list[str] = field(default_factory=list)
+    chosen_tier: str | None = None       # 'local' | 'mid' | 'frontier' | None
+    forced_tier: bool = False            # Explicit override (param or prefix)
+    escalation_signal: bool = False      # User asked for higher tier
+    user_intent: str = ""                # The text the classifier saw
+
+
+def _tier_for_model(model_key: str) -> str | None:
+    """Map a model key to its routing tier (local/mid/frontier)."""
+    if model_key == config.routing.get("default"):
+        return "local"
+    if model_key == config.routing.get("mid"):
+        return "mid"
+    if model_key == config.routing.get("frontier"):
+        return "frontier"
+    # Aliases / unknown — return None rather than guessing
+    return None
+
+
+def choose_model(body: dict, force: str | None) -> RouteDecision:
+    """Decide which model handles this request.
+
+    Resolution order:
+    1. `?route=` query param (forced)
+    2. `body.model` if it resolves to a real model and is not a proxy alias
+    3. Classifier v3 score → three-tier routing
+    """
     if force and force in config.models:
-        return force, f"forced_by_param:{force}"
+        return RouteDecision(
+            model_key=force,
+            reason=f"forced_by_param:{force}",
+            chosen_tier=_tier_for_model(force),
+            forced_tier=True,
+        )
     if force and force in config.aliases:
         resolved = config.aliases[force]
-        return resolved, f"forced_by_param(alias):{force}->{resolved}"
+        return RouteDecision(
+            model_key=resolved,
+            reason=f"forced_by_param(alias):{force}->{resolved}",
+            chosen_tier=_tier_for_model(resolved),
+            forced_tier=True,
+        )
 
     # If the request body specifies a model, try to resolve it
     # — but skip proxy model names (let the heuristic decide instead)
@@ -349,7 +728,12 @@ def choose_model(body: dict, force: str | None) -> tuple[str, str]:
         try:
             resolved = config.resolve_model(body_model)
             if resolved != config.default_model:
-                return resolved, f"body_model:{body_model}->{resolved}"
+                return RouteDecision(
+                    model_key=resolved,
+                    reason=f"body_model:{body_model}->{resolved}",
+                    chosen_tier=_tier_for_model(resolved),
+                    forced_tier=True,
+                )
         except HTTPException:
             pass  # Unknown model name, fall through to heuristic
 
@@ -364,12 +748,33 @@ def choose_model(body: dict, force: str | None) -> tuple[str, str]:
     signals_str = ",".join(signals) if signals else "none"
 
     if score <= 0:
-        return config.default_model, f"classifier:simple(score={score},signals=[{signals_str}])"
+        return RouteDecision(
+            model_key=config.default_model,
+            reason=f"classifier:simple(score={score},signals=[{signals_str}])",
+            score=score,
+            signals=signals,
+            chosen_tier="local",
+            user_intent=user_intent,
+        )
     elif score <= 3:
         mid = config.routing.get("mid", config.routing.get("frontier", config.default_model))
-        return mid, f"classifier:medium(score={score},signals=[{signals_str}])"
+        return RouteDecision(
+            model_key=mid,
+            reason=f"classifier:medium(score={score},signals=[{signals_str}])",
+            score=score,
+            signals=signals,
+            chosen_tier="mid",
+            user_intent=user_intent,
+        )
     frontier = config.routing.get("frontier", config.default_model)
-    return frontier, f"classifier:complex(score={score},signals=[{signals_str}])"
+    return RouteDecision(
+        model_key=frontier,
+        reason=f"classifier:complex(score={score},signals=[{signals_str}])",
+        score=score,
+        signals=signals,
+        chosen_tier="frontier",
+        user_intent=user_intent,
+    )
 
 
 # ── providers ───────────────────────────────────────────────────────
@@ -427,6 +832,77 @@ def _hash_prompt(text: str) -> str:
     import hashlib
 
     return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+async def _capture_stream_and_log(upstream, log_kwargs: dict, start: float, cfg: dict):
+    """Wrap an SSE generator to capture response telemetry, then log on completion.
+
+    Yields each chunk to the client immediately (no buffering). In parallel
+    accumulates response_text, finish_reason, and usage tokens from the
+    stream's events. On completion (or error) writes one row via log_request.
+
+    All providers in this gateway emit OpenAI-compatible Chat Completions
+    SSE chunks (`data: {"choices":[{"delta":{"content":"..."}}]}`), so a
+    single parser handles all of them.
+    """
+    response_parts: list[str] = []
+    finish_reason: str | None = None
+    input_tokens = 0
+    output_tokens = 0
+    error_occurred = False
+
+    try:
+        async for chunk in upstream:
+            # Yield to the client first — never block streaming on logging
+            yield chunk
+            # Then parse the SSE event for telemetry
+            if not isinstance(chunk, str) or not chunk.startswith("data: "):
+                continue
+            data = chunk[6:].strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                event = json.loads(data)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            for choice in event.get("choices", []) or []:
+                delta = choice.get("delta") or {}
+                text = delta.get("content") or ""
+                if text:
+                    response_parts.append(text)
+                fr = choice.get("finish_reason")
+                if fr:
+                    finish_reason = fr
+            usage = event.get("usage")
+            if isinstance(usage, dict):
+                input_tokens = usage.get("prompt_tokens", input_tokens) or input_tokens
+                output_tokens = usage.get("completion_tokens", output_tokens) or output_tokens
+    except Exception:
+        error_occurred = True
+        raise
+    finally:
+        response_text = "".join(response_parts)
+        latency_ms = (time.perf_counter() - start) * 1000
+        cost = None
+        if "cost_per_1m_input" in cfg:
+            cost = (
+                input_tokens * cfg["cost_per_1m_input"]
+                + output_tokens * cfg["cost_per_1m_output"]
+            ) / 1_000_000
+        try:
+            log_request(
+                **log_kwargs,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_ms=latency_ms,
+                cost_estimate=cost,
+                response_text=response_text,
+                response_truncated=(finish_reason == "length"),
+                response_short=(len(response_text) < 50 and not error_occurred),
+                response_error=error_occurred,
+            )
+        except Exception as log_err:  # never let logging break the stream
+            print(f"[LOG ERROR] {log_err}")
 
 
 async def _stream_ollama(
@@ -975,11 +1451,20 @@ async def chat_completions(
     stream = body.get("stream", False)
     body_model = body.get("model", "")
 
-    model_key, reason = choose_model(body, route)
-    cfg = config.get_model(model_key)
+    request_id = str(uuid.uuid4())
+    client_ip = _client_ip(request)
+
+    # Parse !escalate / !frontier / !mid / !local prefix BEFORE routing.
+    # This strips the prefix from the message that gets forwarded.
+    directive = _strip_escalation_from_body(body)
+
+    decision = choose_model(body, route)
+    if directive:
+        decision = _apply_directive(decision, directive)
+    cfg = config.get_model(decision.model_key)
     provider = cfg["provider"]
 
-    # Log the request routing decision
+    # Extract prompt details for logging
     last_user_raw = ""
     last_user_intent = ""
     user_msgs = [m for m in body.get("messages", []) if m.get("role") == "user"]
@@ -988,54 +1473,88 @@ async def chat_completions(
         last_user_raw = c if isinstance(c, str) else str(c)
         last_user_intent = _extract_user_intent(c)
     total_len = len(" ".join(str(m.get("content", "")) for m in body.get("messages", [])))
-    print(f"[ROUTE] body_model={body_model!r} -> key={model_key} provider={provider} reason={reason} user_msg_len={len(last_user_raw)} user_intent_len={len(last_user_intent)} total_len={total_len}")
+    print(
+        f"[ROUTE] rid={request_id[:8]} body_model={body_model!r} -> key={decision.model_key} "
+        f"provider={provider} reason={decision.reason} user_msg_len={len(last_user_raw)} "
+        f"user_intent_len={len(last_user_intent)} total_len={total_len} "
+        f"directive={directive or 'none'}"
+    )
 
-    prompt_text = " ".join(str(m.get("content", "")) for m in body.get("messages", []))
-    prompt_hash = _hash_prompt(prompt_text)
+    # If the user escalated, try to label the previous request as under-routed.
+    # Fire and forget — never block the actual request on this.
+    if decision.escalation_signal:
+        try:
+            correlate_misroute(last_user_intent, decision.chosen_tier, client_ip)
+        except Exception as e:
+            print(f"[MISROUTE ERR] {e}")
+
+    full_prompt = " ".join(str(m.get("content", "")) for m in body.get("messages", []))
+    prompt_hash = _hash_prompt(full_prompt)
+
+    log_kwargs = {
+        "request_id": request_id,
+        "prompt_hash": prompt_hash,
+        "model": decision.model_key,
+        "provider": provider,
+        "route_reason": decision.reason,
+        "client_ip": client_ip,
+        # Store the extracted user intent (what the classifier saw), not the
+        # full message blob which includes tool definitions and system context.
+        "prompt_text": last_user_intent or full_prompt,
+        "score": decision.score,
+        "signals": decision.signals,
+        "chosen_tier": decision.chosen_tier,
+        "forced_tier": decision.forced_tier,
+        "escalation_signal": decision.escalation_signal,
+    }
 
     start = time.perf_counter()
+    response_headers = {"X-LLMux-Request-Id": request_id}
 
+    # Streaming branch — wrap each provider's stream with the capture/logger
+    if stream:
+        if provider == "ollama":
+            upstream = _stream_ollama(request.app.state.http, cfg, body)
+        elif provider in ("openrouter", "openai"):
+            client_key = _bearer(authorization)
+            api_key = _resolve_api_key(provider, client_key)
+            upstream = _stream_openrouter(request.app.state.http, cfg, body, api_key)
+        elif provider == "anthropic":
+            client_key = _bearer(authorization)
+            api_key = _resolve_api_key(provider, client_key)
+            upstream = _stream_anthropic(request.app.state.http, cfg, body, api_key)
+        elif provider == "google":
+            client_key = _bearer(authorization)
+            api_key = _resolve_api_key(provider, client_key)
+            upstream = _stream_gemini(request.app.state.http, cfg, body, api_key)
+        else:
+            raise HTTPException(status_code=500, detail=f"Unknown provider: {provider}")
+        return StreamingResponse(
+            _capture_stream_and_log(upstream, log_kwargs, start, cfg),
+            media_type="text/event-stream",
+            headers=response_headers,
+        )
+
+    # Non-streaming branch
     if provider == "ollama":
-        if stream:
-            return StreamingResponse(
-                _stream_ollama(request.app.state.http, cfg, body),
-                media_type="text/event-stream",
-            )
         result = await _nonstream_ollama(request.app.state.http, cfg, body)
     elif provider in ("openrouter", "openai"):
-        # Extract API key from Authorization header
-        client_key = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else ""
+        client_key = _bearer(authorization)
         api_key = _resolve_api_key(provider, client_key)
-        if stream:
-            return StreamingResponse(
-                _stream_openrouter(request.app.state.http, cfg, body, api_key),
-                media_type="text/event-stream",
-            )
         result = await _nonstream_openrouter(request.app.state.http, cfg, body, api_key)
     elif provider == "anthropic":
-        client_key = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else ""
+        client_key = _bearer(authorization)
         api_key = _resolve_api_key(provider, client_key)
-        if stream:
-            return StreamingResponse(
-                _stream_anthropic(request.app.state.http, cfg, body, api_key),
-                media_type="text/event-stream",
-            )
         result = await _nonstream_anthropic(request.app.state.http, cfg, body, api_key)
     elif provider == "google":
-        client_key = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else ""
+        client_key = _bearer(authorization)
         api_key = _resolve_api_key(provider, client_key)
-        if stream:
-            return StreamingResponse(
-                _stream_gemini(request.app.state.http, cfg, body, api_key),
-                media_type="text/event-stream",
-            )
         result = await _nonstream_gemini(request.app.state.http, cfg, body, api_key)
     else:
         raise HTTPException(status_code=500, detail=f"Unknown provider: {provider}")
 
     latency_ms = (time.perf_counter() - start) * 1000
 
-    # Estimate cost
     usage = result.get("usage", {})
     inp = usage.get("prompt_tokens", 0)
     out = usage.get("completion_tokens", 0)
@@ -1043,18 +1562,30 @@ async def chat_completions(
     if "cost_per_1m_input" in cfg:
         cost = (inp * cfg["cost_per_1m_input"] + out * cfg["cost_per_1m_output"]) / 1_000_000
 
+    # Extract response text + finish_reason for passive heuristics
+    response_text = ""
+    finish_reason = None
+    choices = result.get("choices", [])
+    if choices:
+        msg = choices[0].get("message", {}) or {}
+        response_text = msg.get("content") or ""
+        finish_reason = choices[0].get("finish_reason")
+
     log_request(
-        prompt_hash=prompt_hash,
-        model=model_key,
-        provider=provider,
+        **log_kwargs,
         input_tokens=inp,
         output_tokens=out,
         latency_ms=latency_ms,
-        route_reason=reason,
         cost_estimate=cost,
+        response_text=response_text,
+        response_truncated=(finish_reason == "length"),
+        response_short=(len(response_text) < 50),
+        response_error=("error" in result or not choices),
     )
 
-    return result
+    # Wrap in JSONResponse to attach the request_id header
+    from fastapi.responses import JSONResponse
+    return JSONResponse(content=result, headers=response_headers)
 
 
 def _responses_to_chat(body: dict) -> dict:
@@ -1150,10 +1681,18 @@ async def responses(
     # Convert to chat completions format
     chat_body = _responses_to_chat(body)
 
+    # Parse escalation prefix BEFORE routing
+    directive = _strip_escalation_from_body(chat_body)
+
     # Route using the same logic
-    model_key, reason = choose_model(chat_body, route)
-    cfg = config.get_model(model_key)
+    decision = choose_model(chat_body, route)
+    if directive:
+        decision = _apply_directive(decision, directive)
+    cfg = config.get_model(decision.model_key)
     provider = cfg["provider"]
+
+    request_id = str(uuid.uuid4())
+    client_ip = _client_ip(request)
 
     # Log
     last_user_raw = ""
@@ -1164,58 +1703,91 @@ async def responses(
         last_user_raw = c if isinstance(c, str) else str(c)
         last_user_intent = _extract_user_intent(c)
     total_len = len(" ".join(str(m.get("content", "")) for m in chat_body.get("messages", [])))
-    print(f"[ROUTE-RESP] body_model={body.get('model','')!r} -> key={model_key} provider={provider} reason={reason} user_msg_len={len(last_user_raw)} user_intent_len={len(last_user_intent)} total_len={total_len}")
+    print(
+        f"[ROUTE-RESP] rid={request_id[:8]} body_model={body.get('model','')!r} -> "
+        f"key={decision.model_key} provider={provider} reason={decision.reason} "
+        f"user_msg_len={len(last_user_raw)} user_intent_len={len(last_user_intent)} "
+        f"total_len={total_len} directive={directive or 'none'}"
+    )
+
+    if decision.escalation_signal:
+        try:
+            correlate_misroute(last_user_intent, decision.chosen_tier, client_ip)
+        except Exception as e:
+            print(f"[MISROUTE ERR] {e}")
+
+    log_kwargs = {
+        "request_id": request_id,
+        "prompt_hash": _hash_prompt(str(body.get("input", ""))),
+        "model": decision.model_key,
+        "provider": provider,
+        "route_reason": decision.reason,
+        "client_ip": client_ip,
+        "prompt_text": last_user_intent or str(body.get("input", "")),
+        "score": decision.score,
+        "signals": decision.signals,
+        "chosen_tier": decision.chosen_tier,
+        "forced_tier": decision.forced_tier,
+        "escalation_signal": decision.escalation_signal,
+    }
 
     stream = body.get("stream", False)
     start = time.perf_counter()
+    response_headers = {"X-LLMux-Request-Id": request_id}
 
     if stream:
-        import uuid
         resp_id = f"resp-{uuid.uuid4().hex[:24]}"
 
         # Get the Chat Completions SSE stream from the provider
         if provider == "ollama":
             chat_stream = _stream_ollama(request.app.state.http, cfg, chat_body)
         elif provider in ("openrouter", "openai"):
-            client_key = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else ""
-            api_key = _resolve_api_key(provider, client_key)
+            api_key = _resolve_api_key(provider, _bearer(authorization))
             chat_stream = _stream_openrouter(request.app.state.http, cfg, chat_body, api_key)
         elif provider == "anthropic":
-            client_key = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else ""
-            api_key = _resolve_api_key(provider, client_key)
+            api_key = _resolve_api_key(provider, _bearer(authorization))
             chat_stream = _stream_anthropic(request.app.state.http, cfg, chat_body, api_key)
         elif provider == "google":
-            # Google streaming not yet supported for Responses API
-            client_key = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else ""
-            api_key = _resolve_api_key(provider, client_key)
+            # Google streaming not yet supported for Responses API — fall back to non-streaming
+            api_key = _resolve_api_key(provider, _bearer(authorization))
             result = await _nonstream_gemini(request.app.state.http, cfg, chat_body, api_key)
-            return _chat_to_responses(result, model_key)
+            _log_nonstream_result(result, cfg, log_kwargs, start)
+            from fastapi.responses import JSONResponse
+            return JSONResponse(content=_chat_to_responses(result, decision.model_key), headers=response_headers)
         else:
             raise HTTPException(status_code=500, detail=f"Unknown provider: {provider}")
 
+        # Wrap chat_stream with capture+log, then convert to Responses SSE format
+        captured_chat_stream = _capture_stream_and_log(chat_stream, log_kwargs, start, cfg)
         return StreamingResponse(
-            _stream_responses_from_chat(chat_stream, model_key, resp_id),
+            _stream_responses_from_chat(captured_chat_stream, decision.model_key, resp_id),
             media_type="text/event-stream",
+            headers=response_headers,
         )
 
     # Non-streaming path
     if provider == "ollama":
         result = await _nonstream_ollama(request.app.state.http, cfg, chat_body)
     elif provider in ("openrouter", "openai"):
-        client_key = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else ""
-        api_key = _resolve_api_key(provider, client_key)
+        api_key = _resolve_api_key(provider, _bearer(authorization))
         result = await _nonstream_openrouter(request.app.state.http, cfg, chat_body, api_key)
     elif provider == "anthropic":
-        client_key = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else ""
-        api_key = _resolve_api_key(provider, client_key)
+        api_key = _resolve_api_key(provider, _bearer(authorization))
         result = await _nonstream_anthropic(request.app.state.http, cfg, chat_body, api_key)
     elif provider == "google":
-        client_key = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else ""
-        api_key = _resolve_api_key(provider, client_key)
+        api_key = _resolve_api_key(provider, _bearer(authorization))
         result = await _nonstream_gemini(request.app.state.http, cfg, chat_body, api_key)
     else:
         raise HTTPException(status_code=500, detail=f"Unknown provider: {provider}")
 
+    _log_nonstream_result(result, cfg, log_kwargs, start)
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(content=_chat_to_responses(result, decision.model_key), headers=response_headers)
+
+
+def _log_nonstream_result(result: dict, cfg: dict, log_kwargs: dict, start: float) -> None:
+    """Extract telemetry from a non-streaming Chat Completions result and log it."""
     latency_ms = (time.perf_counter() - start) * 1000
     usage = result.get("usage", {})
     inp = usage.get("prompt_tokens", 0)
@@ -1224,18 +1796,25 @@ async def responses(
     if "cost_per_1m_input" in cfg:
         cost = (inp * cfg["cost_per_1m_input"] + out * cfg["cost_per_1m_output"]) / 1_000_000
 
+    response_text = ""
+    finish_reason = None
+    choices = result.get("choices", [])
+    if choices:
+        msg = choices[0].get("message", {}) or {}
+        response_text = msg.get("content") or ""
+        finish_reason = choices[0].get("finish_reason")
+
     log_request(
-        prompt_hash=_hash_prompt(str(body.get("input", ""))),
-        model=model_key,
-        provider=provider,
+        **log_kwargs,
         input_tokens=inp,
         output_tokens=out,
         latency_ms=latency_ms,
-        route_reason=reason,
         cost_estimate=cost,
+        response_text=response_text,
+        response_truncated=(finish_reason == "length"),
+        response_short=(len(response_text) < 50),
+        response_error=("error" in result or not choices),
     )
-
-    return _chat_to_responses(result, model_key)
 
 
 async def _stream_responses_from_chat(
@@ -1502,6 +2081,58 @@ async def list_models():
 @app.get("/health")
 async def health():
     return {"status": "ok", "default_model": config.default_model}
+
+
+@app.post("/v1/feedback")
+async def feedback(request: Request):
+    """Explicit feedback on a previous request.
+
+    Body: {
+        "request_id": "<uuid>",
+        "rating": -1 | +1,
+        "ideal_tier": "local" | "mid" | "frontier",  // optional
+        "comment": "..."  // optional
+    }
+
+    Updates the matching row with feedback signals. Used by the upcoming
+    `llmux feedback` CLI and by anyone wanting to label routing quality.
+    """
+    body = await request.json()
+    rid = body.get("request_id")
+    rating = body.get("rating")
+    ideal_tier = body.get("ideal_tier")
+    comment = body.get("comment")
+
+    if not rid or rating not in (-1, 1):
+        raise HTTPException(
+            status_code=400,
+            detail="Body must include 'request_id' and 'rating' in {-1, 1}",
+        )
+    if ideal_tier and ideal_tier not in ("local", "mid", "frontier"):
+        raise HTTPException(
+            status_code=400,
+            detail="ideal_tier must be one of: local, mid, frontier",
+        )
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute(
+        """
+        UPDATE requests
+        SET feedback_rating = ?,
+            feedback_at = ?,
+            feedback_comment = ?,
+            ideal_tier = COALESCE(?, ideal_tier)
+        WHERE request_id = ?
+        """,
+        (rating, time.time(), comment, ideal_tier, rid),
+    )
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+    if affected == 0:
+        raise HTTPException(status_code=404, detail=f"No request found with id {rid}")
+    return {"status": "ok", "request_id": rid, "rating": rating, "ideal_tier": ideal_tier}
 
 
 @app.get("/stats/weekly")

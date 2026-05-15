@@ -227,6 +227,74 @@ When the client sends a placeholder key (`sk-placeholder`, `sk-xxx`), the gatewa
 
 ----
 
+## Feedback Loop
+
+The classifier learns from real-world usage through an explicit feedback channel. Every request gets logged with the full prompt + response + routing decision, and users can flag misroutes inline.
+
+### In-prompt directives
+
+Prefix any user message with one of these tokens to override or correct routing. The prefix is stripped before the model sees it.
+
+| Prefix | Effect |
+|--------|--------|
+| `!escalate` | Route this message one tier higher than the classifier picked, AND label the previous request as under-routed |
+| `!frontier` | Force frontier tier |
+| `!mid` | Force mid tier |
+| `!local` | Force local tier |
+
+Example: if you ask a question and the local model gives a weak answer, just re-ask it as `!escalate explain how a database index works`. The gateway:
+
+1. Strips `!escalate` before sending to the frontier model
+2. Marks this request with `escalation_signal=1`
+3. Finds your previous request (same client IP, last 5 minutes, similar prompt — Jaccard > 0.5) and labels it as under-routed (`ideal_tier=mid`)
+
+That gives the classifier a labeled training example without any explicit feedback step.
+
+### Feedback API
+
+For explicit feedback (e.g. from a CLI), POST to `/v1/feedback`:
+
+```bash
+curl -X POST http://localhost:8001/v1/feedback \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request_id": "1e3b11b2-a61c-4702-9dbd-0a251526e41c",
+    "rating": -1,
+    "ideal_tier": "frontier",
+    "comment": "response was incomplete"
+  }'
+```
+
+The `request_id` comes from the `X-LLMux-Request-Id` response header that every chat completions / responses call returns.
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `request_id` | yes | UUID from `X-LLMux-Request-Id` header |
+| `rating` | yes | `-1` (bad) or `+1` (good) |
+| `ideal_tier` | no | `local` / `mid` / `frontier` — what the request should have routed to |
+| `comment` | no | Free-form text |
+
+### What gets logged
+
+Every request stores:
+
+- **Routing decision**: chosen tier, classifier score, fired signals (JSON array), forced/escalation flags
+- **Bodies**: prompt text + response text (set `LLMUX_CAPTURE_BODIES=0` to disable)
+- **Passive heuristics**: `response_truncated` (finish_reason=length), `response_short` (<50 chars), `response_error`
+- **Labels**: `ideal_tier`, source (`user_feedback` / `user_escalate` / `correlated_escalation` / `llm_judge`)
+
+Use the `misroutes` view for training data:
+
+```bash
+sqlite3 router.db "SELECT chosen_tier, ideal_tier, routing_outcome, label_source, score, signals, substr(prompt_text,1,60) FROM misroutes ORDER BY timestamp DESC LIMIT 20;"
+```
+
+### Privacy
+
+Body capture is enabled by default — the feedback loop needs the raw text to identify what's misclassified. Disable with `LLMUX_CAPTURE_BODIES=0` in the environment if you don't want prompts/responses persisted.
+
+----
+
 ## Quick Start
 
 ```bash
