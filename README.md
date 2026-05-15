@@ -1,8 +1,8 @@
-# Model Router
+# LLMux
 
-A local FastAPI gateway that routes prompts between your GPU and frontier APIs. OpenAI-compatible `/v1/chat/completions` and `/v1/responses` endpoints with heuristic routing, cost tracking, and integration support for Claude Code, Codex CLI, and Letta Code.
+A local FastAPI gateway that routes prompts between your GPU and frontier APIs. OpenAI-compatible `/v1/chat/completions` and `/v1/responses` endpoints with heuristic routing, cost tracking, a closed-loop feedback pipeline, and integration support for Claude Code, Codex CLI, and Letta Code.
 
-**Status:** Reference implementation — benchmarks complete, Claude Code and Codex CLI integrations working. Article in progress.
+**Status:** Phases 1–3 shipped — data capture, in-prompt feedback, LLM-as-judge. Article in progress.
 
 ----
 
@@ -14,7 +14,12 @@ A local FastAPI gateway that routes prompts between your GPU and frontier APIs. 
 | Local inference | ✅ 4 Ollama models on RX 7900 XTX |
 | Frontier providers | ✅ OpenAI, Anthropic, Google Gemini, OpenRouter (16 models total) |
 | Streaming | ✅ SSE for Chat Completions + Responses API |
-| Heuristic routing | ✅ Short/simple → local, architecture/complex → frontier |
+| Classifier v3 | ✅ Multi-signal scoring, three-tier routing, 100% no-worse accuracy on 25-prompt benchmark |
+| Feedback loop | ✅ Full prompt/response capture, request IDs, passive heuristics |
+| In-prompt directives | ✅ `!escalate` / `!frontier` / `!mid` / `!local` — strip and override |
+| Misroute correlation | ✅ 5-min window + Jaccard similarity retroactively labels under-routed requests |
+| Feedback API | ✅ `POST /v1/feedback` — explicit rating + ideal_tier |
+| LLM-as-judge | ✅ Daily cron, gpt-5-nano, ~50 requests/day, ~$0.50/day |
 | Proxy model bypass | ✅ Ignores proxy-sent model names, applies gateway heuristic |
 | API key fallback | ✅ Gateway uses its own keys when client sends placeholder |
 | Model aliases | ✅ Config-driven alias resolution (e.g. `gpt-5-mini` → `gpt-5.4-mini`) |
@@ -23,7 +28,6 @@ A local FastAPI gateway that routes prompts between your GPU and frontier APIs. 
 | Claude Code integration | ✅ Via claude-code-proxy + gateway |
 | Codex CLI integration | ✅ Via `model_providers` config + `/v1/responses` |
 | Letta Code integration | ✅ Via local backend + `LMSTUDIO_BASE_URL` |
-| Classifier v3 | ✅ Multi-signal scoring, three-tier routing, 100% no-worse accuracy on 25-prompt benchmark |
 
 ----
 
@@ -402,11 +406,12 @@ The systemd service loads these via `EnvironmentFile`.
 
 | File | Purpose |
 |------|---------|
-| `main.py` | FastAPI app — routing, providers, Responses API, logging |
+| `main.py` | FastAPI app — routing, providers, Responses API, feedback loop, logging |
 | `config.yaml` | Model definitions, aliases, routing rules |
+| `scripts/judge-recent.py` | LLM-as-judge daily cron — scores unjudged requests |
+| `benchmark/` | Benchmark runner, judge, prompts, results, classifier validator |
 | `.env` | API keys (gitignored) |
 | `requirements.txt` | Python dependencies |
-| `benchmark/` | Benchmark runner, judge, prompts, results, classifier validator |
 | `router.db` | SQLite request log (auto-created) |
 
 ----
