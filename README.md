@@ -2,7 +2,11 @@
 
 A local FastAPI gateway that routes prompts between your GPU and frontier APIs. OpenAI-compatible `/v1/chat/completions` and `/v1/responses` endpoints with heuristic routing, cost tracking, a closed-loop feedback pipeline, and integration support for Claude Code, Codex CLI, and Letta Code.
 
-**Status:** Phases 1–3 shipped — data capture, in-prompt feedback, LLM-as-judge. Article in progress.
+**Status:** Phases 1–3 shipped — data capture, in-prompt feedback, LLM-as-judge.
+
+## Article
+
+This repo accompanies the essay ["Don't Pick a Model. Route the Prompt."](https://michaelrossi.ai/writing/dont-pick-a-model-route-the-prompt/), which explains the design rationale, benchmark results, and trade-offs behind LLMux.
 
 > **A note on naming.** This repo is `rossim2i2/llmux` on GitHub but the working directory and systemd service are still `model-router` on the author's machine. LLMux is the project name going forward; `model-router` references reflect the local install path and have not been renamed yet.
 
